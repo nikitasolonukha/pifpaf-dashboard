@@ -137,7 +137,7 @@ npm run db:start && npm run dev
 npm run smoke:app
 ```
 
-`smoke:app` hits real HTTP API routes (`/api/instagram/connect`, sync, dashboard, reels), checks concurrent locks, single-account 409, RLS A/B, storage upload denial, and cleans up test users.
+`smoke:app` hits real HTTP API routes (`/api/instagram/connect`, sync, dashboard, reels), checks concurrent locks, multi-profile connect, RLS A/B, storage upload denial, and cleans up test users.
 
 Live Instagram import requires a funded Apify account (actor `instagram-reel-scraper`). If usage balance is empty, smoke still validates API locks/RLS/auth and reports `BLOCKED_APIFY` for import/sync steps.
 
@@ -147,7 +147,7 @@ GitHub Actions: `.github/workflows/ci.yml` — unit/lint/build with dummy env (n
 
 ## Product rules (test release)
 
-- **One Instagram account per PifPaf user** — connecting a different profile returns HTTP 409.
+- **Несколько Instagram-профилей** на один кабинет — переключатель активного профиля; аналитика scoped по выбранному.
 - Profile sync discovers new shortcodes and updates existing ones via bulk upsert without sending `id`.
 - Sync UI shows elapsed time + indeterminate bar (no fake %).
 - DELETE `/api/reels/:id` returns 404 when the row is not owned / missing (no false success).
@@ -158,5 +158,5 @@ GitHub Actions: `.github/workflows/ci.yml` — unit/lint/build with dummy env (n
 - Метрики — snapshot на момент Apify scrape
 - Profile sync может занимать несколько минут (честный indeterminate UI, без fake %)
 - Covers: permanent upload только JPEG; иначе fallback `source_cover_url`
-- Смена Instagram-профиля в UI отключена (single-account)
+- Смена Instagram-профиля: несколько профилей + переключатель активного
 - Live Apify smoke требует положительный usage balance на Apify

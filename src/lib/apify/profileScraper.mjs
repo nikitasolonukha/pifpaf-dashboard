@@ -1,6 +1,9 @@
 import { ApifyClient } from 'apify-client';
 import { normalizeReelData } from './instagramNormalization.mjs';
 
+/** Apify default is often ~10 — too low for multi-month profile imports. */
+const DEFAULT_RESULTS_LIMIT = 500;
+
 function isErrorItem(item) {
   return !!(item?.error || item?.errorDescription);
 }
@@ -26,6 +29,16 @@ function parseItemTimestamp(item) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Apify schema accepts YYYY-MM-DD (full ISO timestamps can be rejected). */
+export function normalizeCutoffDate(cutoffDate) {
+  if (!cutoffDate) return null;
+  const raw = String(cutoffDate).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
 function filterByCutoff(items, cutoffDate) {
   if (!cutoffDate) return items;
   const cutoff = new Date(cutoffDate + 'T00:00:00.000Z');
@@ -34,6 +47,17 @@ function filterByCutoff(items, cutoffDate) {
     if (!d) return true;
     return d >= cutoff;
   });
+}
+
+function resultsLimitForCutoff(cutoffDate) {
+  if (!cutoffDate) return DEFAULT_RESULTS_LIMIT;
+  const cutoff = new Date(cutoffDate + 'T00:00:00.000Z');
+  if (Number.isNaN(cutoff.getTime())) return DEFAULT_RESULTS_LIMIT;
+  const days = Math.max(1, Math.round((Date.now() - cutoff.getTime()) / 86400000));
+  if (days <= 40) return 80;
+  if (days <= 110) return 200;
+  if (days <= 200) return 350;
+  return DEFAULT_RESULTS_LIMIT;
 }
 
 /**
@@ -45,9 +69,11 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
   if (!token) throw new Error('APIFY_API_TOKEN not configured');
 
   const client = new ApifyClient({ token });
+  const cutoff = normalizeCutoffDate(cutoffDate);
 
   const input = {
     username: [profileUrl],
+    resultsLimit: resultsLimitForCutoff(cutoff),
     skipPinnedPosts: false,
     skipTrialReels: false,
     includeSharesCount: false,
@@ -55,8 +81,8 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     includeDownloadedVideo: false,
   };
 
-  if (cutoffDate) {
-    input.onlyPostsNewerThan = cutoffDate;
+  if (cutoff) {
+    input.onlyPostsNewerThan = cutoff;
   }
 
   let run;
@@ -68,7 +94,7 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
   }
 
   const rawItems = await listAllDatasetItems(client, run.defaultDatasetId);
-  const filtered = filterByCutoff(rawItems.filter(i => !isErrorItem(i)), cutoffDate);
+  const filtered = filterByCutoff(rawItems.filter(i => !isErrorItem(i)), cutoff);
 
   const normalized = [];
   const errors = [];
@@ -87,7 +113,11 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     if (!reel.shortcode) continue;
     byShortcode.set(reel.shortcode, reel);
   }
-  const deduped = [...byShortcode.values()];
+  const deduped = [...byShortcode.values()].sort((a, b) => {
+    const ta = a.published_at ? new Date(a.published_at).getTime() : 0;
+    const tb = b.published_at ? new Date(b.published_at).getTime() : 0;
+    return tb - ta;
+  });
 
   if (deduped.length === 0 && rawItems.length > 0 && errors.length === filtered.length) {
     throw new Error('Не удалось обработать Reels профиля. Попробуй позже.');

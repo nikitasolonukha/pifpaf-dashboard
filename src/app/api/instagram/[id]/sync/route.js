@@ -9,8 +9,16 @@ export async function POST(request, { params }) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { id } = await params;
+    let period;
+    try {
+      const body = await request.json();
+      period = body?.period;
+    } catch {
+      period = undefined;
+    }
+
     const service = new InstagramAccountService(supabase, user.id);
-    const result = await service.sync(id);
+    const result = await service.sync(id, { period });
 
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status });

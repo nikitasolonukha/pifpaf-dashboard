@@ -7,6 +7,9 @@ import ReelTable from '@/components/ReelTable';
 import AddReelModal from '@/components/AddReelModal';
 import InstagramProfileHeader, { SyncToast } from '@/components/InstagramProfileHeader';
 import ReelsSyncProgress, { useReelsSyncMonitor } from '@/components/ReelsSyncProgress';
+import SoftSelect from '@/components/SoftSelect';
+import { useActiveAccountId, withAccountParam } from '@/hooks/useActiveAccount';
+import { DEFAULT_SYNC_PERIOD } from '@/lib/instagram/syncPeriods.mjs';
 
 const PERIOD_FILTERS = [
   { id: 'all', label: 'Все' },
@@ -29,6 +32,7 @@ function filterByPeriod(reels, period) {
 export default function ReelsPage() {
   const [reels, setReels] = useState([]);
   const [account, setAccount] = useState(null);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState('grid');
   const [search, setSearch] = useState('');
@@ -37,25 +41,32 @@ export default function ReelsPage() {
   const [showModal, setShowModal] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncSummary, setSyncSummary] = useState(null);
+  const [syncPeriod, setSyncPeriod] = useState(DEFAULT_SYNC_PERIOD);
+
+  const { activeAccountId, setActiveAccountId } = useActiveAccountId(accounts);
 
   const loadReels = useCallback(async () => {
+    const q = withAccountParam('/api/reels', activeAccountId);
     const [reelsRes, accRes] = await Promise.all([
-      fetch('/api/reels'),
-      fetch('/api/instagram/account'),
+      fetch(q),
+      fetch(withAccountParam('/api/instagram/account', activeAccountId)),
     ]);
     if (reelsRes.ok) {
       const data = await reelsRes.json();
       setReels(data.reels || []);
+      if (data.accounts) setAccounts(data.accounts);
+      if (data.instagramAccount) setAccount(data.instagramAccount);
     }
     if (accRes.ok) {
       const acc = await accRes.json();
-      setAccount(acc.account);
+      if (acc.account) setAccount(acc.account);
+      if (acc.accounts) setAccounts(acc.accounts);
     }
     setLoading(false);
-  }, []);
+  }, [activeAccountId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on mount
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on mount/account
     loadReels();
   }, [loadReels]);
 
@@ -71,7 +82,11 @@ export default function ReelsPage() {
   async function handleSync() {
     if (!account?.id) return;
     setSyncing(true);
-    const res = await fetch(`/api/instagram/${account.id}/sync`, { method: 'POST' });
+    const res = await fetch(`/api/instagram/${account.id}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period: syncPeriod }),
+    });
     const body = await res.json();
     setSyncing(false);
     if (res.ok) {
@@ -131,10 +146,14 @@ export default function ReelsPage() {
         </p>
         <InstagramProfileHeader
           account={account}
+          accounts={accounts}
           reelsTracked={reels.length}
           onSync={account ? handleSync : undefined}
           onAddReel={() => setShowModal(true)}
           syncing={syncing}
+          onAccountChange={setActiveAccountId}
+          syncPeriod={syncPeriod}
+          onSyncPeriodChange={setSyncPeriod}
         />
       </div>
 
@@ -171,23 +190,24 @@ export default function ReelsPage() {
             placeholder="Поиск..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 rounded-[var(--radius-btn)] border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
+            className="w-full pl-9 pr-3 py-2 rounded-[var(--radius-btn)] border border-[var(--border-soft)] bg-white/90 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
           />
         </div>
-        <select
+        <SoftSelect
           value={sort}
-          onChange={e => setSort(e.target.value)}
-          className="px-3 py-2 rounded-[var(--radius-btn)] border border-gray-200 text-sm bg-white"
-        >
-          <option value="newest">Сначала новые</option>
-          <option value="views">По просмотрам</option>
-          <option value="growth">По росту</option>
-        </select>
-        <div className="flex border border-gray-200 rounded-[var(--radius-btn)] overflow-hidden">
-          <button onClick={() => setView('grid')} className={`px-3 py-2 ${view === 'grid' ? 'bg-[var(--pink-bg)]' : 'hover:bg-gray-50'}`}>
+          onChange={setSort}
+          aria-label="Сортировка"
+          options={[
+            { value: 'newest', label: 'Сначала новые' },
+            { value: 'views', label: 'По просмотрам' },
+            { value: 'growth', label: 'По росту' },
+          ]}
+        />
+        <div className="flex border border-[var(--border-soft)] rounded-[var(--radius-btn)] overflow-hidden bg-white/80">
+          <button type="button" onClick={() => setView('grid')} className={`px-3 py-2 ${view === 'grid' ? 'bg-[var(--pink-bg)]' : 'hover:bg-white'}`}>
             <LayoutGrid size={16} />
           </button>
-          <button onClick={() => setView('table')} className={`px-3 py-2 ${view === 'table' ? 'bg-[var(--pink-bg)]' : 'hover:bg-gray-50'}`}>
+          <button type="button" onClick={() => setView('table')} className={`px-3 py-2 ${view === 'table' ? 'bg-[var(--pink-bg)]' : 'hover:bg-white'}`}>
             <Table2 size={16} />
           </button>
         </div>

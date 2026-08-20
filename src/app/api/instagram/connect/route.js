@@ -10,9 +10,10 @@ export async function POST(request) {
 
     const body = await request.json();
     const input = body?.input || body?.url || body?.username || '';
+    const period = body?.period;
 
     const service = new InstagramAccountService(supabase, user.id);
-    const result = await service.connect(input);
+    const result = await service.connect(input, { period });
 
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status });

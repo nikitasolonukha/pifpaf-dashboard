@@ -17,6 +17,7 @@ import {
 } from '@/lib/performanceAnalytics.mjs';
 import { InstagramAccountService } from '@/lib/instagram/accountService';
 import { scopeReelsToAccount } from '@/lib/instagram/profileImport.mjs';
+import { fetchSnapshotsByReelIds } from '@/lib/instagram/fetchSnapshots.mjs';
 
 function attachDeltas(reels, snapshots) {
   const snapsByReel = {};
@@ -41,9 +42,14 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const periodDays = searchParams.get('days');
     const periodMonths = searchParams.get('period');
+    const accountIdParam = searchParams.get('accountId');
+    if (accountIdParam && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(accountIdParam)) {
+      return NextResponse.json({ error: 'Некорректный accountId' }, { status: 400 });
+    }
 
     const service = new InstagramAccountService(supabase, user.id);
-    const instagramAccount = await service.getPrimaryAccount();
+    const accounts = await service.listAccounts();
+    const instagramAccount = await service.resolveAccount(accountIdParam);
 
     const { data: reels } = await supabase
       .from('reels')
@@ -59,13 +65,7 @@ export async function GET(request) {
     }
 
     const reelIds = allReels.map(r => r.id);
-    const { data: snapshots } = reelIds.length
-      ? await supabase
-          .from('reel_metric_snapshots')
-          .select('reel_id, views, likes, comments, captured_at')
-          .in('reel_id', reelIds)
-          .order('captured_at', { ascending: true })
-      : { data: [] };
+    const snapshots = await fetchSnapshotsByReelIds(supabase, reelIds);
 
     const reelsWithDeltaFull = attachDeltas(allReels, snapshots);
     const periodReelsWithDelta = periodDays
@@ -112,6 +112,7 @@ export async function GET(request) {
 
     return NextResponse.json({
       instagramAccount,
+      accounts,
       connected: !!instagramAccount,
       totalReels,
       totalViews,

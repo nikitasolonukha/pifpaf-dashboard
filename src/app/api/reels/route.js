@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { validateInstagramUrl, scrapeReel } from '@/lib/apify/instagram';
 import { uploadCover } from '@/lib/apify/cover';
+import { InstagramAccountService } from '@/lib/instagram/accountService';
+import { scopeReelsToAccount } from '@/lib/instagram/profileImport.mjs';
+import { fetchSnapshotsByReelIds } from '@/lib/instagram/fetchSnapshots.mjs';
 
 export async function POST(request) {
   try {
@@ -91,11 +94,22 @@ export async function POST(request) {
   }
 }
 
-export async function GET() {
+export async function GET(request) {
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const { searchParams } = new URL(request.url);
+    const accountIdParam = searchParams.get('accountId');
+    if (accountIdParam && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(accountIdParam)) {
+      return NextResponse.json({ error: 'Некорректный accountId' }, { status: 400 });
+    }
+
+    const { InstagramAccountService } = await import('@/lib/instagram/accountService');
+    const { scopeReelsToAccount } = await import('@/lib/instagram/profileImport.mjs');
+    const service = new InstagramAccountService(supabase, user.id);
+    const account = await service.resolveAccount(accountIdParam);
 
     const { data: reels, error } = await supabase
       .from('reels')
@@ -105,22 +119,25 @@ export async function GET() {
 
     if (error) throw error;
 
-    const reelIds = reels?.map(r => r.id) || [];
-    if (reelIds.length === 0) return NextResponse.json({ reels: [] });
+    const scoped = scopeReelsToAccount(reels || [], account);
+    const reelIds = scoped.map(r => r.id);
+    if (reelIds.length === 0) {
+      return NextResponse.json({ reels: [], instagramAccount: account, accounts: await service.listAccounts() });
+    }
 
-    const { data: snapshots } = await supabase
-      .from('reel_metric_snapshots')
-      .select('reel_id, views, captured_at')
-      .in('reel_id', reelIds)
-      .order('captured_at', { ascending: true });
+    const snapshots = await fetchSnapshotsByReelIds(
+      supabase,
+      reelIds,
+      'reel_id, views, captured_at',
+    );
 
     const snapsByReel = {};
-    for (const s of snapshots || []) {
+    for (const s of snapshots) {
       if (!snapsByReel[s.reel_id]) snapsByReel[s.reel_id] = [];
       snapsByReel[s.reel_id].push(s);
     }
 
-    const reelsWithDelta = (reels || []).map(r => {
+    const reelsWithDelta = scoped.map(r => {
       const list = snapsByReel[r.id] || [];
       if (list.length < 2) return { ...r, deltaViews: null };
       const latest = list[list.length - 1];
@@ -131,7 +148,11 @@ export async function GET() {
       return { ...r, deltaViews };
     });
 
-    return NextResponse.json({ reels: reelsWithDelta });
+    return NextResponse.json({
+      reels: reelsWithDelta,
+      instagramAccount: account,
+      accounts: await service.listAccounts(),
+    });
   } catch (err) {
     console.error('GET /api/reels error:', err);
     return NextResponse.json({ error: 'Ошибка загрузки' }, { status: 500 });

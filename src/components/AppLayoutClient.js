@@ -9,16 +9,18 @@ export default function AppLayoutClient({ children, profile, hasInstagram }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isOnboarding = pathname === '/onboarding';
-  const isChangeFlow = searchParams.get('change') === '1';
+  // Allow onboarding when adding another profile (or legacy change=1).
+  const allowOnboardingWithAccounts =
+    searchParams.get('add') === '1' || searchParams.get('change') === '1';
 
   useEffect(() => {
     if (!hasInstagram && !isOnboarding) {
       router.replace('/onboarding');
     }
-    if (hasInstagram && isOnboarding && !isChangeFlow) {
+    if (hasInstagram && isOnboarding && !allowOnboardingWithAccounts) {
       router.replace('/dashboard');
     }
-  }, [hasInstagram, isOnboarding, isChangeFlow, router]);
+  }, [hasInstagram, isOnboarding, allowOnboardingWithAccounts, router]);
 
   if (isOnboarding) {
     return (

@@ -12,23 +12,33 @@ import TopReelsChart from '@/components/charts/TopReelsChart';
 import ReelsByMonthChart from '@/components/charts/ReelsByMonthChart';
 import GrowthChart from '@/components/charts/GrowthChart';
 import DashboardReelPreview from '@/components/DashboardReelPreview';
+import { useActiveAccountId, withAccountParam } from '@/hooks/useActiveAccount';
+import { DEFAULT_SYNC_PERIOD } from '@/lib/instagram/syncPeriods.mjs';
 
 export default function DashboardPage() {
   const [data, setData] = useState(null);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [syncSummary, setSyncSummary] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [syncPeriod, setSyncPeriod] = useState(DEFAULT_SYNC_PERIOD);
+
+  const { activeAccountId, setActiveAccountId } = useActiveAccountId(accounts);
 
   const loadData = useCallback(async () => {
-    const res = await fetch('/api/dashboard');
-    if (res.ok) setData(await res.json());
+    const res = await fetch(withAccountParam('/api/dashboard', activeAccountId));
+    if (res.ok) {
+      const json = await res.json();
+      setData(json);
+      if (json.accounts) setAccounts(json.accounts);
+    }
     setLoading(false);
-  }, []);
+  }, [activeAccountId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on mount
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on mount/account
     loadData();
     (async () => {
       const supabase = createClient();
@@ -49,7 +59,11 @@ export default function DashboardPage() {
   async function handleSync() {
     if (!data?.instagramAccount?.id) return;
     setSyncing(true);
-    const res = await fetch(`/api/instagram/${data.instagramAccount.id}/sync`, { method: 'POST' });
+    const res = await fetch(`/api/instagram/${data.instagramAccount.id}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period: syncPeriod }),
+    });
     const body = await res.json();
     setSyncing(false);
     if (res.ok) {
@@ -83,10 +97,14 @@ export default function DashboardPage() {
         <div className="col-span-12 lg:col-span-5">
           <InstagramProfileHeader
             account={data?.instagramAccount}
+            accounts={accounts}
             reelsTracked={data?.totalReels}
             onSync={handleSync}
             onAddReel={() => setShowModal(true)}
             syncing={syncing}
+            onAccountChange={setActiveAccountId}
+            syncPeriod={syncPeriod}
+            onSyncPeriodChange={setSyncPeriod}
           />
         </div>
       </div>

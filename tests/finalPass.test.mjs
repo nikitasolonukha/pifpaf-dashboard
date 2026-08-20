@@ -58,28 +58,22 @@ test('mixed partition: 3 existing + 1 new', () => {
   assert.equal(toInsert[0].reel.shortcode, 'D_NEW');
 });
 
-test('single account: different username → 409', () => {
-  const res = assertSingleAccountConnect({ username: 'alice' }, 'bob');
-  assert.equal(res.ok, false);
-  assert.equal(res.status, 409);
+test('scopeReelsToAccount separates two profiles', () => {
+  const accountA = { id: 'acc-a', username: 'alice' };
+  const accountB = { id: 'acc-b', username: 'bob' };
+  const reels = [
+    { id: '1', instagram_account_id: 'acc-a', shortcode: 'a' },
+    { id: '2', instagram_account_id: 'acc-b', shortcode: 'b' },
+    { id: '3', instagram_account_id: null, owner_username: 'alice', shortcode: 'c' },
+  ];
+  assert.deepEqual(scopeReelsToAccount(reels, accountA).map(r => r.id).sort(), ['1', '3']);
+  assert.deepEqual(scopeReelsToAccount(reels, accountB).map(r => r.id), ['2']);
 });
 
-test('single account: same username → ok', () => {
+test('assertSingleAccountConnect still documents same-username reuse', () => {
   const res = assertSingleAccountConnect({ username: 'alice', id: '1' }, 'Alice');
   assert.equal(res.ok, true);
   assert.equal(res.same, true);
-});
-
-test('scopeReelsToAccount keeps primary + matching owner null-account', () => {
-  const account = { id: 'acc', username: 'creator' };
-  const reels = [
-    { id: '1', instagram_account_id: 'acc', shortcode: 'a' },
-    { id: '2', instagram_account_id: 'other', shortcode: 'b' },
-    { id: '3', instagram_account_id: null, owner_username: 'creator', shortcode: 'c' },
-    { id: '4', instagram_account_id: null, owner_username: 'stranger', shortcode: 'd' },
-  ];
-  const scoped = scopeReelsToAccount(reels, account);
-  assert.deepEqual(scoped.map(r => r.id).sort(), ['1', '3']);
 });
 
 test('filterScrapedForAccount drops foreign owners', () => {

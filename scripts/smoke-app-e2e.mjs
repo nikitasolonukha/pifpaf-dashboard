@@ -90,12 +90,13 @@ async function sessionCookieHeader(session) {
   return header;
 }
 
-function api(pathname, { method = 'GET', body, cookie } = {}) {
+function api(pathname, { method = 'GET', body, cookie, token } = {}) {
   const payload = body ? JSON.stringify(body) : null;
   const url = new URL(`${APP_URL}${pathname}`);
   const lib = url.protocol === 'https:' ? https : http;
   const headers = {
     ...(cookie ? { Cookie: cookie } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
   };
 
@@ -318,17 +319,17 @@ async function main() {
     const sessionA = await signIn(emailA, pass);
     const sessionB = await signIn(emailB, pass);
     created.push(sessionA.user.id, sessionB.user.id);
-    const cookieA = await sessionCookieHeader(sessionA);
-    const cookieB = await sessionCookieHeader(sessionB);
+    const tokenA = sessionA.access_token;
+    const tokenB = sessionB.access_token;
 
-    const authProbe = await api('/api/instagram/account', { cookie: cookieA });
+    const authProbe = await api('/api/instagram/account', { token: tokenA });
     if (authProbe.status !== 200) {
-      throw new Error(`auth cookie failed: ${authProbe.status} ${JSON.stringify(authProbe.json)}`);
+      throw new Error(`auth failed: ${authProbe.status} ${JSON.stringify(authProbe.json)}`);
     }
 
     console.log('2. Concurrent connect lock (real API)');
     const raced = await raceTwo('concurrent connect', () =>
-      api('/api/instagram/connect', { method: 'POST', cookie: cookieA, body: { input: PROFILE } })
+      api('/api/instagram/connect', { method: 'POST', token: tokenA, body: { input: PROFILE } })
     );
     live.concurrentConnect = 'PASS';
     let winner = [raced.winner, raced.loser].find((r) => [200, 201].includes(r.status));
@@ -398,23 +399,40 @@ async function main() {
       .eq('id', accountId);
 
     console.log('3. GET /api/reels + /api/dashboard');
-    const reelsRes = await api('/api/reels', { cookie: cookieA });
+    const reelsRes = await api('/api/reels', { token: tokenA });
     if (reelsRes.status !== 200 || !(reelsRes.json?.reels?.length > 0)) {
       throw new Error('reels empty');
     }
-    const dash = await api('/api/dashboard', { cookie: cookieA });
+    const dash = await api('/api/dashboard', { token: tokenA });
     if (dash.status !== 200 || !(dash.json?.totalReels > 0)) throw new Error('dashboard empty');
 
-    console.log('4. Different username connect → 409');
+    console.log('4. Different username connect creates second account (not 409)');
     const other = await api('/api/instagram/connect', {
       method: 'POST',
-      cookie: cookieA,
+      token: tokenA,
       body: { input: 'https://www.instagram.com/instagram/' },
     });
-    if (other.status !== 409) {
-      throw new Error(`expected 409 for second profile, got ${other.status} ${JSON.stringify(other.json)}`);
+    if (other.status === 409) {
+      throw new Error(`second profile must be allowed, got 409 ${JSON.stringify(other.json)}`);
     }
-    live.singleAccount409 = 'PASS';
+    const { count: accCountAfter } = await admin
+      .from('instagram_accounts')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', sessionA.user.id);
+    if ((accCountAfter || 0) < 2) {
+      // Apify may fail before insert in rare paths — ensureAccountRecord runs first
+      throw new Error(`expected >=2 accounts after second connect, got ${accCountAfter}`);
+    }
+    live.singleAccount409 = 'PASS_MULTI';
+    // Restore focus account for remaining checks
+    await admin
+      .from('instagram_accounts')
+      .update({
+        sync_status: 'ready',
+        sync_error: null,
+        last_synced_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      })
+      .eq('id', accountId);
 
     console.log('5. Concurrent sync lock');
     // Force busy without Apify: claim syncing, second request must 429
@@ -422,7 +440,7 @@ async function main() {
       .from('instagram_accounts')
       .update({ sync_status: 'syncing', updated_at: new Date().toISOString() })
       .eq('id', accountId);
-    const busySync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', cookie: cookieA });
+    const busySync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', token: tokenA });
     if (busySync.status !== 429) {
       throw new Error(`expected busy 429, got ${busySync.status} ${JSON.stringify(busySync.json)}`);
     }
@@ -441,7 +459,7 @@ async function main() {
         .from('reel_metric_snapshots')
         .select('*', { count: 'exact', head: true })
         .in('reel_id', reelIds);
-      const syncOk = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', cookie: cookieA });
+      const syncOk = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', token: tokenA });
       if (syncOk.status !== 200) throw new Error(`sync failed ${syncOk.status}`);
       live.secondSync = 'PASS';
       const { count: snaps2 } = await admin
@@ -456,23 +474,23 @@ async function main() {
     }
 
     console.log('6. RLS User B');
-    const leakDashB = await api('/api/dashboard', { cookie: cookieB });
+    const leakDashB = await api('/api/dashboard', { token: tokenB });
     if (leakDashB.status !== 200) throw new Error('B dashboard auth failed');
     if ((leakDashB.json?.totalReels || 0) !== 0) throw new Error('B sees A reels');
     if (leakDashB.json?.instagramAccount?.id === accountId) throw new Error('B sees A account');
 
-    const leakSync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', cookie: cookieB });
+    const leakSync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', token: tokenB });
     if (leakSync.status === 200) throw new Error('B synced A account');
 
     const reelId = reelsRes.json.reels[0].id;
-    const leakDel = await api(`/api/reels/${reelId}`, { method: 'DELETE', cookie: cookieB });
+    const leakDel = await api(`/api/reels/${reelId}`, { method: 'DELETE', token: tokenB });
     if (![403, 404, 401].includes(leakDel.status)) {
       throw new Error(`B delete should be forbidden/404, got ${leakDel.status}`);
     }
     const still = await admin.from('reels').select('id').eq('id', reelId).maybeSingle();
     if (!still.data) throw new Error('A reel missing after B delete attempt');
 
-    const leakRefresh = await api(`/api/reels/${reelId}/refresh`, { method: 'POST', cookie: cookieB });
+    const leakRefresh = await api(`/api/reels/${reelId}/refresh`, { method: 'POST', token: tokenB });
     if (![403, 404, 401].includes(leakRefresh.status) && leakRefresh.status === 200) {
       throw new Error('B refreshed A reel');
     }
@@ -504,7 +522,7 @@ async function main() {
         last_synced_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
       })
       .eq('id', accountId);
-    const staleSync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', cookie: cookieA });
+    const staleSync = await api(`/api/instagram/${accountId}/sync`, { method: 'POST', token: tokenA });
     // With Apify: 200 or 502 after release. Without: 502 after release is OK if not stuck syncing.
     if (staleSync.status === 429) {
       throw new Error(`stale lock not released: still 429 ${JSON.stringify(staleSync.json)}`);

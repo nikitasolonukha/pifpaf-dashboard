@@ -4,21 +4,30 @@ import { RefreshCw, Plus } from 'lucide-react';
 import { formatDelta } from '@/lib/format';
 import { isSyncInProgress } from '@/lib/instagram/syncProgress';
 import TimeAgo from '@/components/TimeAgo';
+import AccountSwitcher from '@/components/AccountSwitcher';
+import SyncPeriodSelect from '@/components/SyncPeriodSelect';
+import { DEFAULT_SYNC_PERIOD } from '@/lib/instagram/syncPeriods.mjs';
 
 export default function InstagramProfileHeader({
   account,
+  accounts = [],
   reelsTracked = 0,
   onSync,
   onAddReel,
   syncing = false,
+  onAccountChange,
+  syncPeriod = DEFAULT_SYNC_PERIOD,
+  onSyncPeriodChange,
 }) {
+  const list = accounts?.length ? accounts : (account ? [account] : []);
   const initial = account?.username?.[0]?.toUpperCase() || '?';
+  const busy = isSyncInProgress(account, syncing);
 
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+    <div className="flex flex-col gap-3 mb-6 w-full min-w-0">
       <div className="flex items-center gap-3 min-w-0">
         <div
-          className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 border border-[var(--border-soft)]"
+          className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-semibold shrink-0 border border-[var(--border-soft)]"
           style={{ background: 'var(--lavender)' }}
         >
           {account?.avatar_url ? (
@@ -28,9 +37,17 @@ export default function InstagramProfileHeader({
             initial
           )}
         </div>
-        <div className="min-w-0">
-          <p className="font-semibold truncate">@{account?.username || 'instagram'}</p>
-          <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
+        <div className="min-w-0 flex-1">
+          {list.length > 1 && onAccountChange ? (
+            <AccountSwitcher
+              accounts={list}
+              value={account?.id}
+              onChange={onAccountChange}
+            />
+          ) : (
+            <p className="font-semibold truncate">@{account?.username || 'instagram'}</p>
+          )}
+          <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
             {reelsTracked} Reels
             {account?.last_synced_at && (
               <>
@@ -41,26 +58,34 @@ export default function InstagramProfileHeader({
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="flex flex-wrap items-center gap-2">
         {onAddReel && (
           <button
             type="button"
             onClick={onAddReel}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-btn)] text-sm border border-[var(--border-soft)] bg-white/80 hover:bg-white"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-btn)] text-sm border border-[var(--border-soft)] bg-white/80 hover:bg-white shrink-0"
           >
             <Plus size={14} /> Reel
           </button>
+        )}
+        {onSync && account && onSyncPeriodChange && (
+          <SyncPeriodSelect
+            value={syncPeriod}
+            onChange={onSyncPeriodChange}
+            disabled={busy}
+            className="shrink-0"
+          />
         )}
         {onSync && account && (
           <button
             type="button"
             onClick={onSync}
-            disabled={isSyncInProgress(account, syncing)}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-btn)] text-sm font-medium text-white disabled:opacity-60"
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-btn)] text-sm font-medium text-white disabled:opacity-60 shrink-0"
             style={{ background: '#191716' }}
           >
-            <RefreshCw size={14} className={isSyncInProgress(account, syncing) ? 'animate-spin' : ''} />
-            {isSyncInProgress(account, syncing) ? 'Синхронизация…' : 'Синхронизировать'}
+            <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />
+            {busy ? 'Синхронизация…' : 'Синхронизировать'}
           </button>
         )}
       </div>

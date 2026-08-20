@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 
 export async function updateSession(request) {
   let supabaseResponse = NextResponse.next({ request });
+  const authHeader = request.headers.get('authorization');
+  const bearer = authHeader?.match(/^Bearer\s+(.+)$/i)?.[1];
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -27,7 +29,9 @@ export async function updateSession(request) {
 
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = bearer
+    ? await supabase.auth.getUser(bearer)
+    : await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
   const isApi = path.startsWith('/api');
