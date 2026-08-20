@@ -36,10 +36,12 @@ export async function updateSession(request) {
   const path = request.nextUrl.pathname;
   const isApi = path.startsWith('/api');
   const isAuthPage = path === '/login' || path === '/signup';
+  const isPublicApi = path === '/api/auth/signup';
 
   if (isApi) {
     // Always refresh session cookies for API; never HTML-redirect.
-    if (!user) {
+    // Public auth endpoints must stay reachable without a session.
+    if (!user && !isPublicApi) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     return supabaseResponse;
