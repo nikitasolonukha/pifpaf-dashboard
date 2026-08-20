@@ -9,10 +9,23 @@ import { InstagramAccountService } from '../src/lib/instagram/accountService.js'
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const hasCreds = !!(URL && SERVICE);
+
+async function supabaseReachable() {
+  if (!URL || !SERVICE) return false;
+  try {
+    const res = await fetch(`${URL}/rest/v1/`, {
+      headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` },
+    });
+    return res.status > 0 && res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+const hasCreds = await supabaseReachable();
 
 if (!hasCreds) {
-  test('runProfileImport discovery (skipped — no local supabase env)', { skip: true }, () => {});
+  test('runProfileImport discovery (skipped — no reachable supabase)', { skip: true }, () => {});
 } else {
   test('runProfileImport discovers D_NEW via inject scrape', async () => {
     const admin = createClient(URL, SERVICE);

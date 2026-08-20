@@ -12,10 +12,23 @@ import {
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const hasCreds = !!(URL && SERVICE);
+
+async function supabaseReachable() {
+  if (!URL || !SERVICE) return false;
+  try {
+    const res = await fetch(`${URL}/rest/v1/`, {
+      headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` },
+    });
+    return res.status > 0 && res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+const hasCreds = await supabaseReachable();
 
 if (!hasCreds) {
-  test('mixed upsert integration (skipped — no local supabase env)', { skip: true }, () => {});
+  test('mixed upsert integration (skipped — no reachable supabase)', { skip: true }, () => {});
 } else {
   test('mixed upsert: 3 existing + 1 new without id field', async () => {
     const admin = createClient(URL, SERVICE);
