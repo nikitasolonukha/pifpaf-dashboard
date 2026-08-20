@@ -115,13 +115,10 @@ export default function AccountPage() {
               >
                 <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} /> Синхронизировать
               </button>
-              <Link
-                href="/onboarding?change=1"
-                className="px-4 py-2 rounded-[var(--radius-btn)] text-sm border border-[var(--border-soft)] bg-white/80"
-              >
-                Изменить профиль
-              </Link>
             </div>
+            <p className="text-xs mt-3" style={{ color: 'var(--text-secondary)' }}>
+              Один Instagram-профиль на кабинет. Смена аккаунта в этом тестовом релизе недоступна.
+            </p>
           </>
         ) : (
           <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>

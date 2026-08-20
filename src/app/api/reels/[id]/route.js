@@ -8,13 +8,17 @@ export async function DELETE(request, { params }) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { error } = await supabase
+    const { data: deleted, error } = await supabase
       .from('reels')
       .delete()
       .eq('id', id)
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .select('id');
 
     if (error) throw error;
+    if (!deleted?.length) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error('DELETE reel error:', err);

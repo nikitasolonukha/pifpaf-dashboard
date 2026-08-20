@@ -119,10 +119,44 @@ node --env-file=.env.local scripts/smoke-e2e.mjs
 node --env-file=.env.local scripts/smoke-profile-e2e.mjs
 ```
 
+## Final verification
+
+```bash
+npm run verify
+```
+
+Runs: `npm test && npm run lint && npm run build`.
+
+### Live application smoke (requires `.env.local` + running app)
+
+```bash
+# Terminal 1
+npm run db:start && npm run dev
+
+# Terminal 2
+npm run smoke:app
+```
+
+`smoke:app` hits real HTTP API routes (`/api/instagram/connect`, sync, dashboard, reels), checks concurrent locks, single-account 409, RLS A/B, storage upload denial, and cleans up test users.
+
+Live Instagram import requires a funded Apify account (actor `instagram-reel-scraper`). If usage balance is empty, smoke still validates API locks/RLS/auth and reports `BLOCKED_APIFY` for import/sync steps.
+
+### CI
+
+GitHub Actions: `.github/workflows/ci.yml` — unit/lint/build with dummy env (no live Apify).
+
+## Product rules (test release)
+
+- **One Instagram account per PifPaf user** — connecting a different profile returns HTTP 409.
+- Profile sync discovers new shortcodes and updates existing ones via bulk upsert without sending `id`.
+- Sync UI shows elapsed time + indeterminate bar (no fake %).
+- DELETE `/api/reels/:id` returns 404 when the row is not owned / missing (no false success).
+
 ## Known limitations
 
 - Только публичные Instagram данные
 - Метрики — snapshot на момент Apify scrape
 - Profile sync может занимать несколько минут (честный indeterminate UI, без fake %)
 - Covers: permanent upload только JPEG; иначе fallback `source_cover_url`
-- UI сейчас использует primary Instagram account (мульти-аккаунт в схеме есть, UI не расширен)
+- Смена Instagram-профиля в UI отключена (single-account)
+- Live Apify smoke требует положительный usage balance на Apify

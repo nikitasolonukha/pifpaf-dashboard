@@ -16,6 +16,7 @@ import {
   hasGrowthHistory,
 } from '@/lib/performanceAnalytics.mjs';
 import { InstagramAccountService } from '@/lib/instagram/accountService';
+import { scopeReelsToAccount } from '@/lib/instagram/profileImport.mjs';
 
 function attachDeltas(reels, snapshots) {
   const snapsByReel = {};
@@ -49,7 +50,7 @@ export async function GET(request) {
       .select('*')
       .eq('user_id', user.id);
 
-    const allReels = reels || [];
+    const allReels = scopeReelsToAccount(reels || [], instagramAccount);
     let periodReels = allReels;
     if (periodDays) {
       periodReels = filterReelsByDays(allReels, Number(periodDays));

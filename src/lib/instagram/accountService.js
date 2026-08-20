@@ -1,7 +1,6 @@
-import { validateInstagramProfile } from '@/lib/apify/profileValidator.mjs';
-import { scrapeProfileReels } from '@/lib/apify/profileScraper.mjs';
-import { uploadCover } from '@/lib/apify/cover';
-import { throwOnError } from '@/lib/supabase/assert';
+import { validateInstagramProfile } from '../apify/profileValidator.mjs';
+import { scrapeProfileReels } from '../apify/profileScraper.mjs';
+import { throwOnError } from '../supabase/assert.js';
 import {
   dedupeReelsByShortcode,
   partitionImportReels,
@@ -9,27 +8,31 @@ import {
   buildSyncSummary,
   mapWithConcurrency,
   chunkArray,
-} from '@/lib/instagram/profileImport.mjs';
+  buildReelUpsertRow,
+  filterScrapedForAccount,
+  assertSingleAccountConnect,
+} from './profileImport.mjs';
 import {
   SYNC_COOLDOWN_MS,
   SYNC_STALE_MS,
   isSyncStale,
   resolveStaleReleaseStatus,
   canStartSync,
-} from '@/lib/instagram/syncLock.mjs';
+} from './syncLock.mjs';
 
 const IMPORT_MONTHS = 12;
 const COVER_CONCURRENCY = 5;
 const DB_CHUNK_SIZE = 50;
 
+async function defaultUploadCover(...args) {
+  const { uploadCover } = await import('../apify/cover.js');
+  return uploadCover(...args);
+}
+
 function cutoffDateMonthsAgo(months = IMPORT_MONTHS) {
   const d = new Date();
   d.setUTCMonth(d.getUTCMonth() - months);
   return d.toISOString().slice(0, 10);
-}
-
-function reelInstagramUrl(shortcode) {
-  return `https://www.instagram.com/reel/${shortcode}/`;
 }
 
 function mapAccountDbError(error) {
@@ -191,10 +194,22 @@ export class InstagramAccountService {
       return { ok: false, error: validation.error, status: 400 };
     }
 
+    const primary = await this.getPrimaryAccount();
+    const single = assertSingleAccountConnect(primary, validation.username);
+    if (!single.ok) {
+      return { ok: false, error: single.error, status: single.status };
+    }
+
     const importSince = cutoffDateMonthsAgo();
-    const { account: saved, error: saveError } = await this.ensureAccountRecord(validation, importSince);
-    if (saveError || !saved) {
-      return { ok: false, error: saveError || 'Не удалось сохранить аккаунт', status: 500 };
+
+    // Same username already connected → reuse primary (no second account).
+    let saved = single.same ? primary : null;
+    if (!saved) {
+      const ensured = await this.ensureAccountRecord(validation, importSince);
+      if (ensured.error || !ensured.account) {
+        return { ok: false, error: ensured.error || 'Не удалось сохранить аккаунт', status: 500 };
+      }
+      saved = ensured.account;
     }
 
     let account = await this.releaseStaleSync(saved);
@@ -262,13 +277,16 @@ export class InstagramAccountService {
     }
   }
 
-  async runProfileImport(account, cutoffDate) {
-    const { reels: scrapedRaw } = await scrapeProfileReels(account.profile_url, { cutoffDate });
-    const scraped = dedupeReelsByShortcode(scrapedRaw);
+  async runProfileImport(account, cutoffDate, { scrape = scrapeProfileReels, upload = defaultUploadCover } = {}) {
+    const { reels: scrapedRaw } = await scrape(account.profile_url, { cutoffDate });
+    const scraped = filterScrapedForAccount(
+      dedupeReelsByShortcode(scrapedRaw),
+      account.username
+    );
 
     const { data: existingReels, error: existingError } = await this.supabase
       .from('reels')
-      .select('id, shortcode, views, cover_url, source_cover_url')
+      .select('id, shortcode, views, cover_url, source_cover_url, instagram_account_id')
       .eq('user_id', this.userId);
 
     throwOnError({ error: existingError }, 'load existing reels');
@@ -280,7 +298,6 @@ export class InstagramAccountService {
 
     const { toUpdate, toInsert } = partitionImportReels(scraped, byShortcode);
     const now = new Date().toISOString();
-    let failedCount = 0;
 
     const coverJobs = [];
     for (const item of toUpdate) {
@@ -308,58 +325,32 @@ export class InstagramAccountService {
     }
 
     const coverResults = await mapWithConcurrency(coverJobs, COVER_CONCURRENCY, async (job) => {
-      const uploaded = await uploadCover(job.sourceUrl, this.userId, job.shortcode);
+      const uploaded = await upload(job.sourceUrl, this.userId, job.shortcode);
       return { key: job.key, coverUrl: uploaded || job.fallback || job.sourceUrl || null };
     });
     const coverByShortcode = Object.fromEntries(coverResults.map(r => [r.key, r.coverUrl]));
 
-    const upsertRows = [];
+    const upsertRows = [
+      ...toUpdate.map(({ reel, existing }) => buildReelUpsertRow({
+        reel,
+        existing,
+        account,
+        userId: this.userId,
+        coverUrl: coverByShortcode[reel.shortcode],
+        now,
+      })),
+      ...toInsert.map(({ reel }) => buildReelUpsertRow({
+        reel,
+        account,
+        userId: this.userId,
+        coverUrl: coverByShortcode[reel.shortcode],
+        now,
+      })),
+    ];
 
-    for (const { reel, existing } of toUpdate) {
-      upsertRows.push({
-        id: existing.id,
-        user_id: this.userId,
-        instagram_account_id: account.id,
-        instagram_url: reel.instagram_url_from_apify || reelInstagramUrl(reel.shortcode),
-        instagram_reel_id: reel.instagram_reel_id,
-        shortcode: reel.shortcode,
-        caption: reel.caption,
-        owner_username: reel.owner_username || account.username,
-        owner_full_name: reel.owner_full_name,
-        cover_url: coverByShortcode[reel.shortcode] ?? existing.cover_url,
-        source_cover_url: reel.source_cover_url,
-        published_at: reel.published_at,
-        views: reel.views,
-        likes: reel.likes,
-        comments: reel.comments,
-        sync_status: 'ready',
-        sync_error: null,
-        last_synced_at: now,
-        updated_at: now,
-      });
-    }
-
-    for (const { reel } of toInsert) {
-      upsertRows.push({
-        user_id: this.userId,
-        instagram_account_id: account.id,
-        instagram_url: reel.instagram_url_from_apify || reelInstagramUrl(reel.shortcode),
-        instagram_reel_id: reel.instagram_reel_id,
-        shortcode: reel.shortcode,
-        caption: reel.caption,
-        owner_username: reel.owner_username || account.username,
-        owner_full_name: reel.owner_full_name,
-        cover_url: coverByShortcode[reel.shortcode] || reel.source_cover_url,
-        source_cover_url: reel.source_cover_url,
-        published_at: reel.published_at,
-        views: reel.views,
-        likes: reel.likes,
-        comments: reel.comments,
-        sync_status: 'ready',
-        sync_error: null,
-        last_synced_at: now,
-        updated_at: now,
-      });
+    // Safety: never send primary key in mixed bulk upsert.
+    for (const row of upsertRows) {
+      if ('id' in row) delete row.id;
     }
 
     const savedRows = [];
@@ -377,7 +368,7 @@ export class InstagramAccountService {
     }
 
     const savedShortcodes = new Set(savedRows.map(r => r.shortcode));
-    failedCount = upsertRows.filter(r => !savedShortcodes.has(r.shortcode)).length;
+    const failedCount = upsertRows.filter(r => !savedShortcodes.has(r.shortcode)).length;
 
     const scrapedByShortcode = Object.fromEntries(scraped.map(r => [r.shortcode, r]));
     const snapshots = savedRows.map(row => {
@@ -395,7 +386,6 @@ export class InstagramAccountService {
       const { error } = await this.supabase.from('reel_metric_snapshots').insert(chunk);
       if (error) {
         console.error('Bulk snapshot insert failed:', error);
-        failedCount += chunk.length;
         throwOnError({ error }, 'insert snapshots');
       }
     }
