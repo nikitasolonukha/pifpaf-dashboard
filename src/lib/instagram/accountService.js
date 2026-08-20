@@ -1,5 +1,12 @@
 import { validateInstagramProfile } from '../apify/profileValidator.mjs';
-import { scrapeProfileReels } from '../apify/profileScraper.mjs';
+import {
+  scrapeProfileReels,
+  startProfileReelsScrape,
+  collectProfileReelsRun,
+  encodeApifyPending,
+  decodeApifyPending,
+  sanitizeAccountForClient,
+} from '../apify/profileScraper.mjs';
 import { throwOnError } from '../supabase/assert.js';
 import {
   dedupeReelsByShortcode,
@@ -255,8 +262,7 @@ export class InstagramAccountService {
     }
 
     try {
-      const summary = await this.runProfileImport(account, importSince);
-      return { ok: true, account: summary.account, summary };
+      return await this.startPendingImport(account, importSince);
     } catch (err) {
       await this.markAccountError(account.id, err.message);
       return { ok: false, error: err.message, status: 502 };
@@ -321,12 +327,99 @@ export class InstagramAccountService {
     }
 
     try {
-      const summary = await this.runProfileImport(activeAccount, importSince);
-      return { ok: true, account: summary.account, summary };
+      return await this.startPendingImport(activeAccount, importSince);
     } catch (err) {
       await this.markAccountError(activeAccount.id, err.message);
       return { ok: false, error: err.message, status: 502 };
     }
+  }
+
+  /** Start Apify without waiting (avoids Vercel request timeouts). */
+  async startPendingImport(account, importSince) {
+    const started = await startProfileReelsScrape(account.profile_url, { cutoffDate: importSince });
+    const marker = encodeApifyPending(started);
+    const { data, error } = await this.supabase
+      .from('instagram_accounts')
+      .update({
+        sync_status: 'syncing',
+        sync_error: marker,
+        import_since: importSince,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', account.id)
+      .eq('user_id', this.userId)
+      .select()
+      .single();
+    if (error) throwOnError({ error }, 'startPendingImport');
+    return {
+      ok: true,
+      pending: true,
+      account: sanitizeAccountForClient(data),
+    };
+  }
+
+  /** Poll Apify and finalize import when the run completes. */
+  async tickPendingImport(account) {
+    if (!account || account.sync_status !== 'syncing') {
+      return { account: sanitizeAccountForClient(account), changed: false };
+    }
+    const pending = decodeApifyPending(account.sync_error);
+    if (!pending) {
+      return { account: sanitizeAccountForClient(account), changed: false };
+    }
+
+    let collected;
+    try {
+      collected = await collectProfileReelsRun(pending.runId, pending.datasetId, {
+        cutoffDate: pending.cutoff || account.import_since,
+      });
+    } catch (err) {
+      await this.markAccountError(account.id, err.message || 'Ошибка Apify');
+      const fresh = await this.getAccountById(account.id);
+      return { account: sanitizeAccountForClient(fresh), changed: true, error: err.message };
+    }
+
+    if (collected.status === 'running') {
+      return { account: sanitizeAccountForClient(account), changed: false };
+    }
+    if (collected.status === 'failed') {
+      await this.markAccountError(account.id, collected.error || 'Ошибка Apify');
+      const fresh = await this.getAccountById(account.id);
+      return { account: sanitizeAccountForClient(fresh), changed: true, error: collected.error };
+    }
+
+    try {
+      const summary = await this.runProfileImport(
+        account,
+        pending.cutoff || account.import_since,
+        { scrapedReels: collected.reels },
+      );
+      return {
+        account: sanitizeAccountForClient(summary.account),
+        summary,
+        changed: true,
+      };
+    } catch (err) {
+      await this.markAccountError(account.id, err.message);
+      const fresh = await this.getAccountById(account.id);
+      return { account: sanitizeAccountForClient(fresh), changed: true, error: err.message };
+    }
+  }
+
+  async tickAllPendingImports() {
+    const accounts = await this.listAccounts();
+    let lastSummary = null;
+    const out = [];
+    for (const account of accounts) {
+      if (account.sync_status !== 'syncing') {
+        out.push(sanitizeAccountForClient(account));
+        continue;
+      }
+      const ticked = await this.tickPendingImport(account);
+      if (ticked.summary) lastSummary = ticked.summary;
+      out.push(ticked.account);
+    }
+    return { accounts: out, summary: lastSummary };
   }
 
   async deleteAccount(accountId) {
@@ -387,8 +480,16 @@ export class InstagramAccountService {
     return { ok: true, deletedId: account.id, username: account.username };
   }
 
-  async runProfileImport(account, cutoffDate, { scrape = scrapeProfileReels, upload = defaultUploadCover } = {}) {
-    const { reels: scrapedRaw } = await scrape(account.profile_url, { cutoffDate });
+  async runProfileImport(account, cutoffDate, {
+    scrape = scrapeProfileReels,
+    upload = defaultUploadCover,
+    scrapedReels = null,
+  } = {}) {
+    let scrapedRaw = scrapedReels;
+    if (!scrapedRaw) {
+      const scrapedResult = await scrape(account.profile_url, { cutoffDate });
+      scrapedRaw = scrapedResult.reels;
+    }
     const scraped = filterScrapedForAccount(
       dedupeReelsByShortcode(scrapedRaw),
       account.username

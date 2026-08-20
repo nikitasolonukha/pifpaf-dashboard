@@ -3,6 +3,7 @@ import { normalizeReelData } from './instagramNormalization.mjs';
 
 /** Apify default is often ~10 — too low for multi-month profile imports. */
 const DEFAULT_RESULTS_LIMIT = 500;
+const ACTOR_ID = 'apify/instagram-reel-scraper';
 
 function isErrorItem(item) {
   return !!(item?.error || item?.errorDescription);
@@ -60,17 +61,7 @@ function resultsLimitForCutoff(cutoffDate) {
   return DEFAULT_RESULTS_LIMIT;
 }
 
-/**
- * Scrape all reels from an Instagram profile for the given period.
- * Uses the same apify/instagram-reel-scraper actor with profile URL input.
- */
-export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
-  const token = process.env.APIFY_API_TOKEN;
-  if (!token) throw new Error('APIFY_API_TOKEN not configured');
-
-  const client = new ApifyClient({ token });
-  const cutoff = normalizeCutoffDate(cutoffDate);
-
+function buildActorInput(profileUrl, cutoff) {
   const input = {
     username: [profileUrl],
     resultsLimit: resultsLimitForCutoff(cutoff),
@@ -80,22 +71,12 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     includeTranscript: false,
     includeDownloadedVideo: false,
   };
+  if (cutoff) input.onlyPostsNewerThan = cutoff;
+  return input;
+}
 
-  if (cutoff) {
-    input.onlyPostsNewerThan = cutoff;
-  }
-
-  let run;
-  try {
-    run = await client.actor('apify/instagram-reel-scraper').call(input);
-  } catch (err) {
-    console.error('Apify profile scrape failed:', err);
-    throw new Error('Instagram сейчас не отдал данные. Попробуй обновить чуть позже.');
-  }
-
-  const rawItems = await listAllDatasetItems(client, run.defaultDatasetId);
+function normalizeDatasetItems(rawItems, cutoff) {
   const filtered = filterByCutoff(rawItems.filter(i => !isErrorItem(i)), cutoff);
-
   const normalized = [];
   const errors = [];
 
@@ -107,7 +88,6 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     }
   }
 
-  // Dedupe by shortcode before returning to import pipeline.
   const byShortcode = new Map();
   for (const reel of normalized) {
     if (!reel.shortcode) continue;
@@ -128,4 +108,88 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     rawCount: rawItems.length,
     skipped: errors.length + (normalized.length - deduped.length),
   };
+}
+
+function getClient() {
+  const token = process.env.APIFY_API_TOKEN;
+  if (!token) throw new Error('APIFY_API_TOKEN not configured');
+  return new ApifyClient({ token });
+}
+
+/** Start Apify run without waiting (Vercel-safe). */
+export async function startProfileReelsScrape(profileUrl, { cutoffDate } = {}) {
+  const client = getClient();
+  const cutoff = normalizeCutoffDate(cutoffDate);
+  try {
+    const run = await client.actor(ACTOR_ID).start(buildActorInput(profileUrl, cutoff));
+    return {
+      runId: run.id,
+      datasetId: run.defaultDatasetId,
+      cutoff,
+    };
+  } catch (err) {
+    console.error('Apify profile scrape start failed:', err);
+    throw new Error('Instagram сейчас не отдал данные. Попробуй обновить чуть позже.');
+  }
+}
+
+/** Check Apify run; if succeeded, return normalized reels. */
+export async function collectProfileReelsRun(runId, datasetId, { cutoffDate } = {}) {
+  const client = getClient();
+  const cutoff = normalizeCutoffDate(cutoffDate);
+  const run = await client.run(runId).get();
+  const status = run?.status || 'UNKNOWN';
+
+  if (status === 'RUNNING' || status === 'READY' || status === 'PENDING') {
+    return { status: 'running', reels: null };
+  }
+  if (status !== 'SUCCEEDED') {
+    return { status: 'failed', reels: null, error: `Apify status: ${status}` };
+  }
+
+  const rawItems = await listAllDatasetItems(client, datasetId || run.defaultDatasetId);
+  const normalized = normalizeDatasetItems(rawItems, cutoff);
+  return { status: 'succeeded', ...normalized };
+}
+
+/**
+ * Scrape all reels from an Instagram profile for the given period (blocking).
+ * Prefer start+collect on serverless hosts with short timeouts.
+ */
+export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
+  const client = getClient();
+  const cutoff = normalizeCutoffDate(cutoffDate);
+
+  let run;
+  try {
+    run = await client.actor(ACTOR_ID).call(buildActorInput(profileUrl, cutoff));
+  } catch (err) {
+    console.error('Apify profile scrape failed:', err);
+    throw new Error('Instagram сейчас не отдал данные. Попробуй обновить чуть позже.');
+  }
+
+  const rawItems = await listAllDatasetItems(client, run.defaultDatasetId);
+  return normalizeDatasetItems(rawItems, cutoff);
+}
+
+export const APIFY_PENDING_PREFIX = '__apify__:';
+
+export function encodeApifyPending({ runId, datasetId, cutoff }) {
+  return `${APIFY_PENDING_PREFIX}${runId}|${datasetId || ''}|${cutoff || ''}`;
+}
+
+export function decodeApifyPending(syncError) {
+  if (!syncError || !String(syncError).startsWith(APIFY_PENDING_PREFIX)) return null;
+  const raw = String(syncError).slice(APIFY_PENDING_PREFIX.length);
+  const [runId, datasetId, cutoff] = raw.split('|');
+  if (!runId) return null;
+  return { runId, datasetId: datasetId || null, cutoff: cutoff || null };
+}
+
+export function sanitizeAccountForClient(account) {
+  if (!account) return account;
+  if (account.sync_error && String(account.sync_error).startsWith(APIFY_PENDING_PREFIX)) {
+    return { ...account, sync_error: null };
+  }
+  return account;
 }

@@ -36,12 +36,47 @@ function OnboardingForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input, period }),
       });
-      const data = await res.json();
+
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+        setError('Сервер не ответил вовремя. Попробуй ещё раз или меньший период.');
+        setLoading(false);
+        return;
+      }
 
       if (!res.ok) {
         setError(data.error || 'Не удалось подключить');
         setLoading(false);
         return;
+      }
+
+      if (data.pending || res.status === 202) {
+        // Apify runs in background — poll until sync finishes.
+        const started = Date.now();
+        for (;;) {
+          if (Date.now() - started > 15 * 60 * 1000) {
+            setError('Импорт слишком долгий. Обнови страницу позже — данные могут уже подтянуться.');
+            setLoading(false);
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 4000));
+          const poll = await fetch('/api/instagram/account');
+          if (!poll.ok) continue;
+          const acc = await poll.json();
+          const current = (acc.accounts || []).find((a) => a.id === data.account?.id) || acc.account;
+          if (!current) continue;
+          if (current.sync_status === 'syncing') continue;
+          if (current.sync_status === 'error') {
+            setError(current.sync_error || 'Ошибка синхронизации');
+            setLoading(false);
+            return;
+          }
+          setResult(acc.summary || { imported: acc.reelsTracked || 0, newCount: acc.reelsTracked || 0 });
+          setTimeout(() => router.push(isAddProfile ? '/account' : '/dashboard'), 1800);
+          return;
+        }
       }
 
       setResult(data.summary);

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { InstagramAccountService } from '@/lib/instagram/accountService';
 
+export const maxDuration = 60;
+
 export async function POST(request) {
   try {
     const supabase = await createClient();
@@ -21,8 +23,9 @@ export async function POST(request) {
 
     return NextResponse.json({
       account: result.account,
-      summary: result.summary,
-    }, { status: 201 });
+      pending: !!result.pending,
+      summary: result.summary || null,
+    }, { status: result.pending ? 202 : 201 });
   } catch (err) {
     console.error('POST /api/instagram/connect:', err);
     return NextResponse.json({ error: 'Внутренняя ошибка' }, { status: 500 });

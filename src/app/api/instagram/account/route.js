@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { InstagramAccountService } from '@/lib/instagram/accountService';
+import { sanitizeAccountForClient } from '@/lib/apify/profileScraper.mjs';
+
+export const maxDuration = 60;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -17,8 +20,11 @@ export async function GET(request) {
     }
 
     const service = new InstagramAccountService(supabase, user.id);
-    const accounts = await service.listAccounts();
-    const account = await service.resolveAccount(accountIdParam);
+    const ticked = await service.tickAllPendingImports();
+    const accounts = ticked.accounts;
+    const account = accountIdParam
+      ? accounts.find((a) => a.id === accountIdParam) || null
+      : accounts[0] || null;
 
     if (!accounts.length) {
       return NextResponse.json({
@@ -27,6 +33,7 @@ export async function GET(request) {
         accounts: [],
         reelsTracked: 0,
         reelsTrackedByAccount: {},
+        summary: null,
       });
     }
 
@@ -44,10 +51,11 @@ export async function GET(request) {
 
     return NextResponse.json({
       connected: !!account,
-      account,
-      accounts,
+      account: sanitizeAccountForClient(account),
+      accounts: accounts.map(sanitizeAccountForClient),
       reelsTracked: account ? (reelsTrackedByAccount[account.id] || 0) : 0,
       reelsTrackedByAccount,
+      summary: ticked.summary || null,
     });
   } catch (err) {
     console.error('GET instagram account:', err);

@@ -53,7 +53,7 @@ export default function ReelsSyncProgress({
       <div className="text-left max-w-md mx-auto">
         <h2 className="text-xl font-semibold mb-2 text-center">{title}</h2>
         <p className="text-sm mb-5 text-center" style={{ color: 'var(--text-secondary)' }}>
-          Получаем публичные Reels за 12 месяцев. Это может занять несколько минут. Не закрывай страницу.
+          Получаем публичные Reels. Это может занять несколько минут — не закрывай страницу.
         </p>
         <IndeterminateBar />
         <p className="text-xs mt-3 text-center tabular-nums" style={{ color: 'var(--text-secondary)' }}>
