@@ -1,0 +1,12 @@
+---
+description: Core execution rules
+alwaysApply: true
+---
+
+- Inspect existing code before editing.
+- Prefer minimal diffs over rewrites.
+- Preserve naming, style, and architecture consistency.
+- Never hardcode secrets.
+- Do not add dependencies without clear justification.
+- When requirements are ambiguous, infer from the repo before inventing.
+- After implementation, give exact verification steps.

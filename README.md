@@ -1,36 +1,106 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# PifPaf AI — Кабинет блогера
 
-## Getting Started
+Внутренний web dashboard для блогеров PifPaf AI. Каждый пользователь видит и управляет только своими Instagram Reels.
 
-First, run the development server:
+## Stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Next.js 16 (App Router, JavaScript)
+- Tailwind CSS 4
+- Supabase (Auth, PostgreSQL, Storage)
+- Apify (`apify/instagram-reel-scraper`)
+- Recharts
+- Lucide React
+
+## Архитектура
+
+```
+src/
+├── app/
+│   ├── (auth)/login, signup    — страницы авторизации
+│   ├── (app)/dashboard         — главная с KPI
+│   ├── (app)/reels             — лента Reels (grid/table)
+│   ├── (app)/reels/[id]        — детальная страница Reel
+│   ├── (app)/analytics         — общая аналитика
+│   └── api/                    — серверные API routes
+├── components/                 — UI компоненты
+├── lib/
+│   ├── supabase/               — клиенты Supabase (browser, server, middleware)
+│   ├── apify/                  — Apify integration + cover upload
+│   └── format.js               — форматирование чисел и дат
+└── middleware.js               — защита маршрутов
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Как запустить
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+```bash
+npm install
+cp .env.example .env.local
+# Заполнить .env.local (или использовать локальный Supabase — см. ниже)
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Локальный Supabase (Docker)
 
-## Learn More
+```bash
+# Требуется Docker Desktop
+npx supabase start
 
-To learn more about Next.js, take a look at the following resources:
+# Ключи для .env.local (после start):
+# NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+# NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY из вывода supabase start>
+# SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY из вывода supabase start>
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+npm run dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Studio: http://127.0.0.1:54323  
+Mailpit (письма signup): http://127.0.0.1:54324
 
-## Deploy on Vercel
+Миграции применяются автоматически при `supabase start` из `supabase/migrations/`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Env variables
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Переменная | Описание | Где используется |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | URL проекта Supabase | Client + Server |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Anon key Supabase | Client + Server |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key | Server only (cover upload) |
+| `APIFY_API_TOKEN` | Токен Apify | Server only |
+
+## Supabase setup
+
+1. Создать проект в Supabase.
+2. Выполнить SQL из `supabase/migrations/001_initial.sql` в SQL Editor.
+3. В Storage убедиться, что bucket `reel-covers` создан (миграция делает это автоматически).
+4. Включить Email auth в Authentication → Providers.
+
+## Apify setup
+
+1. Зарегистрироваться на apify.com.
+2. Получить API token в Settings → Integrations.
+3. Указать в `APIFY_API_TOKEN`.
+
+## Как работает Reel import
+
+1. Пользователь вставляет URL.
+2. Server валидирует URL (regex на shortcode).
+3. Проверяет duplicate по `(user_id, shortcode)`.
+4. Вызывает `apify/instagram-reel-scraper` с прямым Reel URL через `username: [url]` и отключёнными платными extras.
+5. Нормализует данные (`videoPlayCount ?? videoViewCount`).
+6. Скачивает cover → Supabase Storage.
+7. Вставляет запись в `reels` + первый `reel_metric_snapshots`.
+
+## Как работает metrics history
+
+- Каждый refresh (ручной или "обновить все") создаёт новый snapshot.
+- Chart строится по реальным snapshot records.
+- На detail page видна полная история.
+
+## Known limitations
+
+- Доступны только публичные Instagram данные.
+- Показатели являются snapshot на момент Apify scrape.
+- Цифры могут немного отличаться от authenticated Instagram view.
+- Realtime streaming не реализован.
+- Apify actor может быть rate-limited при частых запросах.
+- Permanent cover download хранит только JPEG (`image/jpeg`); если Apify отдаёт другой формат, используется fallback `displayUrl`.

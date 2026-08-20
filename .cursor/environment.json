@@ -1,0 +1,13 @@
+{
+  "install": "npm install",
+  "terminals": [
+    {
+      "name": "app",
+      "command": "npm run dev"
+    },
+    {
+      "name": "test",
+      "command": "npm run test -- --runInBand"
+    }
+  ]
+}

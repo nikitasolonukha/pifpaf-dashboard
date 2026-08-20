@@ -1,0 +1,9 @@
+---
+description: Visual and UX quality checks for sites
+alwaysApply: false
+---
+
+- Check spacing rhythm, typography scale, hover states, mobile layout, and empty states.
+- Keep copy tight and conversion-oriented when editing marketing sections.
+- Prefer strong first-screen clarity: what it is, who it is for, primary CTA.
+- Do not break existing SEO-critical structure without reason.

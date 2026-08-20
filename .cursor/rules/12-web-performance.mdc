@@ -1,0 +1,10 @@
+---
+description: Performance rules for websites
+globs: ["**/*.tsx", "**/*.ts", "**/*.jsx", "**/*.js", "public/**"]
+alwaysApply: false
+---
+
+- Prefer small bundles and native browser features.
+- Avoid shipping oversized images, duplicate fonts, or blocking scripts.
+- Favor CSS and HTML solutions before JavaScript-heavy interactions.
+- When adding assets, keep filenames and loading strategy sane.

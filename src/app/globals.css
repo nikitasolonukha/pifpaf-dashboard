@@ -1,26 +1,30 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --bg: #F8F6F4;
+  --surface: #FFFFFF;
+  --text-primary: #191716;
+  --text-secondary: #77716D;
+  --pink: #F3C9D4;
+  --pink-bg: #FBECEF;
+  --blush: #F6ECEF;
+  --peach: #F3E1D5;
+  --lavender: #EEE7F6;
+  --sage: #ECF3EC;
+  --green-bg: #E5F2E7;
+  --border-soft: rgba(25, 23, 22, 0.06);
+  --shadow-soft: 0 1px 3px rgba(25, 23, 22, 0.04), 0 8px 24px rgba(25, 23, 22, 0.03);
+  --radius: 22px;
+  --radius-lg: 28px;
+  --radius-btn: 16px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #e0dcd8; border-radius: 3px; }

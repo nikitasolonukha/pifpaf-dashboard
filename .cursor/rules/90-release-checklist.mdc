@@ -1,0 +1,9 @@
+---
+description: Final check before completion
+alwaysApply: true
+---
+
+- Before finishing, verify changed files are consistent with the task.
+- Note any assumptions that affect correctness.
+- Prefer one verification command per major change.
+- If something could not be verified, say so plainly.

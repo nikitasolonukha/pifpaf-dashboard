@@ -1,0 +1,10 @@
+---
+description: Security gate for generated and modified code
+alwaysApply: true
+---
+
+- For newly generated or modified first-party code, run a lightweight security review before finalizing changes.
+- Check input validation, auth/permission flaws, secrets exposure, injection risks, SSRF, path traversal, unsafe file handling, and insecure defaults.
+- If findings are returned, fix them before finishing.
+- Do not introduce secrets into code, tests, docs, examples, or commits.
+- Prefer parameterized queries, strict schema validation, least-privilege auth checks, and safe defaults.

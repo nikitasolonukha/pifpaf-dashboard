@@ -1,0 +1,12 @@
+---
+description: Website and frontend rules
+globs: ["**/*.tsx", "**/*.ts", "**/*.jsx", "**/*.js", "app/**", "components/**", "src/**", "pages/**"]
+alwaysApply: false
+---
+
+- Reuse existing UI primitives before creating new ones.
+- Keep components small, composable, and visually consistent.
+- Preserve accessibility basics: landmarks, labels, focus states, keyboard paths.
+- Prefer readable Tailwind and simple composition over clever abstractions.
+- Optimize for clean layout, responsive behavior, and obvious visual hierarchy.
+- Avoid unnecessary animation, libraries, or state managers.

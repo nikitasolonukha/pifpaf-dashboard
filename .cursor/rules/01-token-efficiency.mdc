@@ -1,0 +1,12 @@
+---
+description: Keep Cursor fast and token-efficient
+alwaysApply: true
+---
+
+- Be concise and execution-focused.
+- Do not re-read large files repeatedly.
+- Read only the files needed for the current task.
+- Prefer targeted search over broad scans.
+- Do not propose large rewrites when a local patch works.
+- Do not invoke extra tools, agents, or scans unless they materially help the task.
+- Summaries should contain only actionable points, not long theory.
