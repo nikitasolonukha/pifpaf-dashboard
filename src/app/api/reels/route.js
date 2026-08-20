@@ -72,12 +72,17 @@ export async function POST(request) {
     }
 
     // Create initial snapshot
-    await supabase.from('reel_metric_snapshots').insert({
+    const { error: snapError } = await supabase.from('reel_metric_snapshots').insert({
       reel_id: reel.id,
       views: reelData.views,
       likes: reelData.likes,
       comments: reelData.comments,
     });
+
+    if (snapError) {
+      console.error('Snapshot insert error:', snapError);
+      return NextResponse.json({ error: 'Reel сохранён, но snapshot не создан' }, { status: 500 });
+    }
 
     return NextResponse.json({ reel }, { status: 201 });
   } catch (err) {

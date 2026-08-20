@@ -1,106 +1,128 @@
-# PifPaf AI — Кабинет блогера
+# PifPaf Creator — кабинет блогера
 
-Внутренний web dashboard для блогеров PifPaf AI. Каждый пользователь видит и управляет только своими Instagram Reels.
+Внутренний web-кабинет для блогеров: подключение публичного Instagram-профиля, импорт Reels за 12 месяцев, dashboard, синхронизация метрик и snapshot-based growth.
+
+## Основной flow
+
+1. Signup / Login (Supabase Auth)
+2. Onboarding: connect Instagram profile URL / `@username`
+3. Apify `instagram-reel-scraper` собирает публичные Reels (12 месяцев)
+4. Dashboard: KPI, Top-20, Top Reels, месячные графики, latest Reels, growth
+5. My Reels: grid/table, manual Reel add, delete, single refresh
+6. Analytics: те же метрики с фильтром периода
+7. Sync: atomic lock → Apify → bulk upsert + snapshots → honest summary toast
 
 ## Stack
 
 - Next.js 16 (App Router, JavaScript)
 - Tailwind CSS 4
-- Supabase (Auth, PostgreSQL, Storage)
+- Supabase (Auth, Postgres, Storage, RLS)
 - Apify (`apify/instagram-reel-scraper`)
 - Recharts
-- Lucide React
 
 ## Архитектура
 
 ```
 src/
-├── app/
-│   ├── (auth)/login, signup    — страницы авторизации
-│   ├── (app)/dashboard         — главная с KPI
-│   ├── (app)/reels             — лента Reels (grid/table)
-│   ├── (app)/reels/[id]        — детальная страница Reel
-│   ├── (app)/analytics         — общая аналитика
-│   └── api/                    — серверные API routes
-├── components/                 — UI компоненты
-├── lib/
-│   ├── supabase/               — клиенты Supabase (browser, server, middleware)
-│   ├── apify/                  — Apify integration + cover upload
-│   └── format.js               — форматирование чисел и дат
-└── middleware.js               — защита маршрутов
+├── app/(auth)          login / signup
+├── app/(app)           dashboard, reels, analytics, account, onboarding
+├── app/api             dashboard, reels, instagram connect/sync
+├── components          UI (утверждённый pastel layout)
+├── lib/apify           scrape, normalize, exact reel match, covers
+├── lib/instagram       accountService, profileImport, syncLock
+├── lib/supabase        browser / server / proxy session
+└── proxy.js            session refresh + API 401 JSON
+supabase/migrations     001…006
+tests/                  unit tests (no network)
+scripts/                smoke-e2e, smoke-profile-e2e
 ```
 
-## Как запустить
+## Env
+
+Скопируй `.env.example` → `.env.local`:
+
+| Variable | Usage |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Client + server |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Client + server |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server only (cover upload to Storage) |
+| `APIFY_API_TOKEN` | Server only (profile / reel scrape) |
+
+Секреты в git не коммитятся (`.env*.local` в `.gitignore`).
+
+## Local run (Docker Supabase)
 
 ```bash
 npm install
+npm run db:start          # Docker containers
+npm run db:push           # migrations up
 cp .env.example .env.local
-# Заполнить .env.local (или использовать локальный Supabase — см. ниже)
-npm run dev
+# заполнить ключами из `npx supabase status`
+npm run dev               # http://localhost:3002
 ```
 
-### Локальный Supabase (Docker)
+Studio: http://127.0.0.1:54323
+
+## Migrations / RLS
+
+- `001` profiles, reels, snapshots, storage bucket
+- `002` grants
+- `003–005` instagram_accounts + RLS fixes
+- `006` drop open storage INSERT policy (service role bypasses RLS; upload only via service client)
+
+RLS: user читает/пишет только свои `profiles`, `reels`, `reel_metric_snapshots`, `instagram_accounts`.
+
+## Apify
+
+- Actor: `apify/instagram-reel-scraper`
+- Profile: username = profile URL, `onlyPostsNewerThan` = 12 months, paid extras off
+- Direct Reel: exact shortcode match (never first random item)
+- Views: `videoPlayCount ?? videoViewCount`
+
+## Profile import
+
+1. Atomic claim `sync_status=syncing` (connect + sync)
+2. One Apify run → normalize → **dedupe by shortcode**
+3. Covers: bounded concurrency (5)
+4. Reels: chunked upsert `(user_id, shortcode)`
+5. Snapshots: chunked bulk insert
+6. Summary: `checked / newCount / updatedCount / failedCount / viewsDelta` (только успешные writes)
+
+Stale lock: `SYNC_STALE_MS` (10 мин). Cooldown между sync: `SYNC_COOLDOWN_MS` (3 мин).
+
+## Manual Reel
+
+`POST /api/reels` — validate URL → exact scrape → insert + snapshot. Не подменяет другим Reel.
+
+## Snapshots / growth
+
+Growth = sum(latest − previous) по snapshots на Reel. Отрицательные delta сохраняются. Один snapshot → growth unavailable.
+
+## API auth
+
+`proxy.js` / session helper: для `/api/*` без сессии → **401 JSON** `{ error: "Unauthorized" }`, без HTML redirect на `/login`.
+
+## Tests / CI
 
 ```bash
-# Требуется Docker Desktop
-npx supabase start
-
-# Ключи для .env.local (после start):
-# NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
-# NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY из вывода supabase start>
-# SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY из вывода supabase start>
-
-npm run dev
+npm test
+npm run lint
+npm run build
 ```
 
-Studio: http://127.0.0.1:54323  
-Mailpit (письма signup): http://127.0.0.1:54324
+GitHub Actions: `.github/workflows/ci.yml` (unit + lint + build, dummy env, без live Apify).
 
-Миграции применяются автоматически при `supabase start` из `supabase/migrations/`.
+Live smoke (нужны credentials в `.env.local`):
 
-## Env variables
-
-| Переменная | Описание | Где используется |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | URL проекта Supabase | Client + Server |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Anon key Supabase | Client + Server |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role key | Server only (cover upload) |
-| `APIFY_API_TOKEN` | Токен Apify | Server only |
-
-## Supabase setup
-
-1. Создать проект в Supabase.
-2. Выполнить SQL из `supabase/migrations/001_initial.sql` в SQL Editor.
-3. В Storage убедиться, что bucket `reel-covers` создан (миграция делает это автоматически).
-4. Включить Email auth в Authentication → Providers.
-
-## Apify setup
-
-1. Зарегистрироваться на apify.com.
-2. Получить API token в Settings → Integrations.
-3. Указать в `APIFY_API_TOKEN`.
-
-## Как работает Reel import
-
-1. Пользователь вставляет URL.
-2. Server валидирует URL (regex на shortcode).
-3. Проверяет duplicate по `(user_id, shortcode)`.
-4. Вызывает `apify/instagram-reel-scraper` с прямым Reel URL через `username: [url]` и отключёнными платными extras.
-5. Нормализует данные (`videoPlayCount ?? videoViewCount`).
-6. Скачивает cover → Supabase Storage.
-7. Вставляет запись в `reels` + первый `reel_metric_snapshots`.
-
-## Как работает metrics history
-
-- Каждый refresh (ручной или "обновить все") создаёт новый snapshot.
-- Chart строится по реальным snapshot records.
-- На detail page видна полная история.
+```bash
+node --env-file=.env.local scripts/smoke-e2e.mjs
+node --env-file=.env.local scripts/smoke-profile-e2e.mjs
+```
 
 ## Known limitations
 
-- Доступны только публичные Instagram данные.
-- Показатели являются snapshot на момент Apify scrape.
-- Цифры могут немного отличаться от authenticated Instagram view.
-- Realtime streaming не реализован.
-- Apify actor может быть rate-limited при частых запросах.
-- Permanent cover download хранит только JPEG (`image/jpeg`); если Apify отдаёт другой формат, используется fallback `displayUrl`.
+- Только публичные Instagram данные
+- Метрики — snapshot на момент Apify scrape
+- Profile sync может занимать несколько минут (честный indeterminate UI, без fake %)
+- Covers: permanent upload только JPEG; иначе fallback `source_cover_url`
+- UI сейчас использует primary Instagram account (мульти-аккаунт в схеме есть, UI не расширен)

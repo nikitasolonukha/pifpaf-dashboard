@@ -94,10 +94,7 @@ export default function DashboardPage() {
       <ReelsSyncProgress
         active={syncMonitor.active}
         elapsedSec={syncMonitor.elapsedSec}
-        stage={syncMonitor.stage}
-        progress={syncMonitor.progress}
-        etaText={syncMonitor.etaText}
-        title="Синхронизируем Reels с Instagram…"
+        title="Синхронизируем Instagram…"
       />
 
       {/* Hero KPI — 12 col */}

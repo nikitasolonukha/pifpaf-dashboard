@@ -83,7 +83,19 @@ export default function ReelsPage() {
   }
 
   async function handleDelete(id) {
-    await fetch(`/api/reels/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/reels/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setSyncSummary({
+        partial: true,
+        checked: 0,
+        newCount: 0,
+        updatedCount: 0,
+        failedCount: 1,
+        errorMessage: body.error || 'Не удалось удалить Reel',
+      });
+      return;
+    }
     setReels(r => r.filter(x => x.id !== id));
   }
 
@@ -91,8 +103,7 @@ export default function ReelsPage() {
     setReels(r => r.map(x => x.id === id ? { ...x, sync_status: 'syncing' } : x));
     const res = await fetch(`/api/reels/${id}/refresh`, { method: 'POST' });
     if (res.ok) {
-      const { reel } = await res.json();
-      setReels(r => r.map(x => x.id === id ? reel : x));
+      await loadReels();
     } else {
       await loadReels();
     }
@@ -130,10 +141,7 @@ export default function ReelsPage() {
       <ReelsSyncProgress
         active={syncMonitor.active}
         elapsedSec={syncMonitor.elapsedSec}
-        stage={syncMonitor.stage}
-        progress={syncMonitor.progress}
-        etaText={syncMonitor.etaText}
-        title="Синхронизируем Reels с Instagram…"
+        title="Синхронизируем Instagram…"
       />
 
       <div className="flex flex-wrap gap-2 mb-4">

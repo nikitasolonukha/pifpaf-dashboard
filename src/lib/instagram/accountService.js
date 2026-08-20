@@ -1,10 +1,26 @@
 import { validateInstagramProfile } from '@/lib/apify/profileValidator.mjs';
 import { scrapeProfileReels } from '@/lib/apify/profileScraper.mjs';
 import { uploadCover } from '@/lib/apify/cover';
+import { throwOnError } from '@/lib/supabase/assert';
+import {
+  dedupeReelsByShortcode,
+  partitionImportReels,
+  calcImportViewsDelta,
+  buildSyncSummary,
+  mapWithConcurrency,
+  chunkArray,
+} from '@/lib/instagram/profileImport.mjs';
+import {
+  SYNC_COOLDOWN_MS,
+  SYNC_STALE_MS,
+  isSyncStale,
+  resolveStaleReleaseStatus,
+  canStartSync,
+} from '@/lib/instagram/syncLock.mjs';
 
-const SYNC_COOLDOWN_MS = 3 * 60 * 1000;
-const SYNC_STALE_MS = 10 * 60 * 1000;
 const IMPORT_MONTHS = 12;
+const COVER_CONCURRENCY = 5;
+const DB_CHUNK_SIZE = 50;
 
 function cutoffDateMonthsAgo(months = IMPORT_MONTHS) {
   const d = new Date();
@@ -23,7 +39,7 @@ function mapAccountDbError(error) {
   if (
     code === '42P01' ||
     code === 'PGRST205' ||
-    /instagram_accounts/.test(msg) && /(does not exist|schema cache)/i.test(msg)
+    (/instagram_accounts/.test(msg) && /(does not exist|schema cache)/i.test(msg))
   ) {
     return 'База не обновлена. В терминале проекта выполни: npm run db:push';
   }
@@ -41,25 +57,17 @@ export class InstagramAccountService {
   }
 
   isSyncStale(account) {
-    if (!account || account.sync_status !== 'syncing') return false;
-    const updatedAt = account.updated_at || account.created_at;
-    if (!updatedAt) return true;
-    return Date.now() - new Date(updatedAt).getTime() > SYNC_STALE_MS;
+    return isSyncStale(account, Date.now(), SYNC_STALE_MS);
   }
 
   async releaseStaleSync(account) {
     if (!this.isSyncStale(account)) return account;
 
-    const nextStatus = account.last_synced_at ? 'ready' : 'error';
-    const syncError = nextStatus === 'error'
-      ? 'Синхронизация прервана. Нажми «Синхронизировать» снова.'
-      : null;
-
-    const { data } = await this.supabase
+    const next = resolveStaleReleaseStatus(account);
+    const { data, error } = await this.supabase
       .from('instagram_accounts')
       .update({
-        sync_status: nextStatus,
-        sync_error: syncError,
+        ...next,
         updated_at: new Date().toISOString(),
       })
       .eq('id', account.id)
@@ -68,11 +76,12 @@ export class InstagramAccountService {
       .select()
       .maybeSingle();
 
-    return data || { ...account, sync_status: nextStatus, sync_error: syncError };
+    if (error) throwOnError({ error }, 'releaseStaleSync');
+    return data || { ...account, ...next };
   }
 
   async getPrimaryAccount() {
-    const { data } = await this.supabase
+    const { data, error } = await this.supabase
       .from('instagram_accounts')
       .select('*')
       .eq('user_id', this.userId)
@@ -80,24 +89,23 @@ export class InstagramAccountService {
       .limit(1)
       .maybeSingle();
 
+    if (error) throwOnError({ error }, 'getPrimaryAccount');
     if (!data) return null;
     return this.releaseStaleSync(data);
   }
 
-  async saveAccountRecord(validation, importSince) {
-    const payload = {
+  async ensureAccountRecord(validation, importSince) {
+    const base = {
       user_id: this.userId,
       username: validation.username,
       profile_url: validation.profileUrl,
       import_since: importSince,
-      sync_status: 'syncing',
-      sync_error: null,
       updated_at: new Date().toISOString(),
     };
 
     const { data: existing, error: findError } = await this.supabase
       .from('instagram_accounts')
-      .select('id')
+      .select('*')
       .eq('user_id', this.userId)
       .eq('username', validation.username)
       .maybeSingle();
@@ -109,7 +117,11 @@ export class InstagramAccountService {
     if (existing?.id) {
       const { data, error } = await this.supabase
         .from('instagram_accounts')
-        .update(payload)
+        .update({
+          profile_url: validation.profileUrl,
+          import_since: importSince,
+          updated_at: base.updated_at,
+        })
         .eq('id', existing.id)
         .eq('user_id', this.userId)
         .select()
@@ -120,12 +132,57 @@ export class InstagramAccountService {
 
     const { data, error } = await this.supabase
       .from('instagram_accounts')
-      .insert(payload)
+      .insert({
+        ...base,
+        sync_status: 'ready',
+        sync_error: null,
+      })
       .select()
       .single();
 
-    if (error) return { account: null, error: mapAccountDbError(error) };
+    if (error) {
+      if (error.code === '23505') {
+        const { data: raced } = await this.supabase
+          .from('instagram_accounts')
+          .select('*')
+          .eq('user_id', this.userId)
+          .eq('username', validation.username)
+          .maybeSingle();
+        if (raced) return { account: raced, error: null };
+      }
+      return { account: null, error: mapAccountDbError(error) };
+    }
     return { account: data, error: null };
+  }
+
+  async markAccountError(accountId, message) {
+    const { error } = await this.supabase
+      .from('instagram_accounts')
+      .update({
+        sync_status: 'error',
+        sync_error: message || 'Ошибка синхронизации',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', accountId)
+      .eq('user_id', this.userId);
+    if (error) console.error('markAccountError failed:', error.message);
+  }
+
+  async claimAccountSync(accountId) {
+    const { data, error } = await this.supabase
+      .from('instagram_accounts')
+      .update({
+        sync_status: 'syncing',
+        sync_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', accountId)
+      .eq('user_id', this.userId)
+      .neq('sync_status', 'syncing')
+      .select('id');
+
+    if (error) throwOnError({ error }, 'claimAccountSync');
+    return data?.length > 0;
   }
 
   async connect(input) {
@@ -135,20 +192,27 @@ export class InstagramAccountService {
     }
 
     const importSince = cutoffDateMonthsAgo();
-    const { account, error: saveError } = await this.saveAccountRecord(validation, importSince);
-
-    if (saveError || !account) {
+    const { account: saved, error: saveError } = await this.ensureAccountRecord(validation, importSince);
+    if (saveError || !saved) {
       return { ok: false, error: saveError || 'Не удалось сохранить аккаунт', status: 500 };
+    }
+
+    let account = await this.releaseStaleSync(saved);
+    const gate = canStartSync(account, { cooldownMs: 0 });
+    if (!gate.ok && gate.reason === 'busy') {
+      return { ok: false, error: 'Синхронизация уже выполняется', status: 429 };
+    }
+
+    const claimed = await this.claimAccountSync(account.id);
+    if (!claimed) {
+      return { ok: false, error: 'Синхронизация уже выполняется', status: 429 };
     }
 
     try {
       const summary = await this.runProfileImport(account, importSince);
       return { ok: true, account: summary.account, summary };
     } catch (err) {
-      await this.supabase
-        .from('instagram_accounts')
-        .update({ sync_status: 'error', sync_error: err.message })
-        .eq('id', account.id);
+      await this.markAccountError(account.id, err.message);
       return { ok: false, error: err.message, status: 502 };
     }
   }
@@ -165,22 +229,21 @@ export class InstagramAccountService {
       return { ok: false, error: 'Аккаунт не найден', status: 404 };
     }
 
-    const activeAccount = await this.releaseStaleSync(account);
-
-    if (activeAccount.sync_status === 'syncing') {
-      return { ok: false, error: 'Синхронизация уже выполняется', status: 429 };
-    }
-
-    if (activeAccount.last_synced_at) {
-      const elapsed = Date.now() - new Date(activeAccount.last_synced_at).getTime();
-      if (elapsed < SYNC_COOLDOWN_MS) {
-        const waitMin = Math.ceil((SYNC_COOLDOWN_MS - elapsed) / 60000);
+    let activeAccount = await this.releaseStaleSync(account);
+    const gate = canStartSync(activeAccount, { cooldownMs: SYNC_COOLDOWN_MS });
+    if (!gate.ok) {
+      if (gate.reason === 'busy') {
+        return { ok: false, error: 'Синхронизация уже выполняется', status: 429 };
+      }
+      if (gate.reason === 'cooldown') {
+        const waitMin = Math.ceil(gate.waitMs / 60000);
         return {
           ok: false,
           error: `Подожди ${waitMin} мин перед следующей синхронизацией`,
           status: 429,
         };
       }
+      return { ok: false, error: 'Аккаунт не найден', status: 404 };
     }
 
     const claimed = await this.claimAccountSync(activeAccount.id);
@@ -194,160 +257,193 @@ export class InstagramAccountService {
       const summary = await this.runProfileImport(activeAccount, importSince);
       return { ok: true, account: summary.account, summary };
     } catch (err) {
-      await this.supabase
-        .from('instagram_accounts')
-        .update({ sync_status: 'error', sync_error: err.message })
-        .eq('id', activeAccount.id);
+      await this.markAccountError(activeAccount.id, err.message);
       return { ok: false, error: err.message, status: 502 };
     }
   }
 
-  async claimAccountSync(accountId) {
-    const { data } = await this.supabase
-      .from('instagram_accounts')
-      .update({ sync_status: 'syncing', sync_error: null, updated_at: new Date().toISOString() })
-      .eq('id', accountId)
-      .eq('user_id', this.userId)
-      .neq('sync_status', 'syncing')
-      .select('id');
-    return data?.length > 0;
-  }
-
   async runProfileImport(account, cutoffDate) {
-    const { reels: scraped } = await scrapeProfileReels(account.profile_url, { cutoffDate });
+    const { reels: scrapedRaw } = await scrapeProfileReels(account.profile_url, { cutoffDate });
+    const scraped = dedupeReelsByShortcode(scrapedRaw);
 
-    const { data: existingReels } = await this.supabase
+    const { data: existingReels, error: existingError } = await this.supabase
       .from('reels')
       .select('id, shortcode, views, cover_url, source_cover_url')
       .eq('user_id', this.userId);
+
+    throwOnError({ error: existingError }, 'load existing reels');
 
     const byShortcode = {};
     for (const r of existingReels || []) {
       if (r.shortcode) byShortcode[r.shortcode] = r;
     }
 
-    let newCount = 0;
-    let updatedCount = 0;
-    let viewsDelta = 0;
+    const { toUpdate, toInsert } = partitionImportReels(scraped, byShortcode);
     const now = new Date().toISOString();
+    let failedCount = 0;
 
-    for (const reelData of scraped) {
-      const shortcode = reelData.shortcode;
-      if (!shortcode) continue;
-
-      const existing = byShortcode[shortcode];
-      const instagramUrl = reelData.instagram_url_from_apify || reelInstagramUrl(shortcode);
-
-      if (existing) {
-        const prevViews = Number(existing.views ?? 0);
-        viewsDelta += Number(reelData.views ?? 0) - prevViews;
-
-        let coverUrl = existing.cover_url;
-        if (reelData.source_cover_url && reelData.source_cover_url !== existing.source_cover_url) {
-          const uploaded = await uploadCover(reelData.source_cover_url, this.userId, shortcode);
-          coverUrl = uploaded || reelData.source_cover_url || existing.cover_url;
-        }
-
-        await this.supabase
-          .from('reels')
-          .update({
-            caption: reelData.caption,
-            owner_username: reelData.owner_username || account.username,
-            owner_full_name: reelData.owner_full_name,
-            cover_url: coverUrl,
-            source_cover_url: reelData.source_cover_url,
-            published_at: reelData.published_at,
-            views: reelData.views,
-            likes: reelData.likes,
-            comments: reelData.comments,
-            instagram_account_id: account.id,
-            sync_status: 'ready',
-            sync_error: null,
-            last_synced_at: now,
-            updated_at: now,
-          })
-          .eq('id', existing.id);
-
-        await this.supabase.from('reel_metric_snapshots').insert({
-          reel_id: existing.id,
-          views: reelData.views,
-          likes: reelData.likes,
-          comments: reelData.comments,
+    const coverJobs = [];
+    for (const item of toUpdate) {
+      if (
+        item.reel.source_cover_url &&
+        item.reel.source_cover_url !== item.existing.source_cover_url
+      ) {
+        coverJobs.push({
+          key: item.reel.shortcode,
+          sourceUrl: item.reel.source_cover_url,
+          shortcode: item.reel.shortcode,
+          fallback: item.existing.cover_url,
         });
-
-        updatedCount += 1;
-      } else {
-        const coverUrl = await uploadCover(reelData.source_cover_url, this.userId, shortcode);
-
-        const { data: inserted, error: insertError } = await this.supabase
-          .from('reels')
-          .insert({
-            user_id: this.userId,
-            instagram_account_id: account.id,
-            instagram_url: instagramUrl,
-            instagram_reel_id: reelData.instagram_reel_id,
-            shortcode,
-            caption: reelData.caption,
-            owner_username: reelData.owner_username || account.username,
-            owner_full_name: reelData.owner_full_name,
-            cover_url: coverUrl || reelData.source_cover_url,
-            source_cover_url: reelData.source_cover_url,
-            published_at: reelData.published_at,
-            views: reelData.views,
-            likes: reelData.likes,
-            comments: reelData.comments,
-            sync_status: 'ready',
-            last_synced_at: now,
-          })
-          .select('id')
-          .single();
-
-        if (insertError) {
-          if (insertError.code === '23505') {
-            updatedCount += 1;
-            continue;
-          }
-          console.error('Insert reel error:', insertError);
-          continue;
-        }
-
-        await this.supabase.from('reel_metric_snapshots').insert({
-          reel_id: inserted.id,
-          views: reelData.views,
-          likes: reelData.likes,
-          comments: reelData.comments,
+      }
+    }
+    for (const item of toInsert) {
+      if (item.reel.source_cover_url) {
+        coverJobs.push({
+          key: item.reel.shortcode,
+          sourceUrl: item.reel.source_cover_url,
+          shortcode: item.reel.shortcode,
+          fallback: item.reel.source_cover_url,
         });
-
-        byShortcode[shortcode] = inserted;
-        newCount += 1;
       }
     }
 
-    const { data: updatedAccount } = await this.supabase
-      .from('instagram_accounts')
-      .update({
+    const coverResults = await mapWithConcurrency(coverJobs, COVER_CONCURRENCY, async (job) => {
+      const uploaded = await uploadCover(job.sourceUrl, this.userId, job.shortcode);
+      return { key: job.key, coverUrl: uploaded || job.fallback || job.sourceUrl || null };
+    });
+    const coverByShortcode = Object.fromEntries(coverResults.map(r => [r.key, r.coverUrl]));
+
+    const upsertRows = [];
+
+    for (const { reel, existing } of toUpdate) {
+      upsertRows.push({
+        id: existing.id,
+        user_id: this.userId,
+        instagram_account_id: account.id,
+        instagram_url: reel.instagram_url_from_apify || reelInstagramUrl(reel.shortcode),
+        instagram_reel_id: reel.instagram_reel_id,
+        shortcode: reel.shortcode,
+        caption: reel.caption,
+        owner_username: reel.owner_username || account.username,
+        owner_full_name: reel.owner_full_name,
+        cover_url: coverByShortcode[reel.shortcode] ?? existing.cover_url,
+        source_cover_url: reel.source_cover_url,
+        published_at: reel.published_at,
+        views: reel.views,
+        likes: reel.likes,
+        comments: reel.comments,
         sync_status: 'ready',
         sync_error: null,
+        last_synced_at: now,
+        updated_at: now,
+      });
+    }
+
+    for (const { reel } of toInsert) {
+      upsertRows.push({
+        user_id: this.userId,
+        instagram_account_id: account.id,
+        instagram_url: reel.instagram_url_from_apify || reelInstagramUrl(reel.shortcode),
+        instagram_reel_id: reel.instagram_reel_id,
+        shortcode: reel.shortcode,
+        caption: reel.caption,
+        owner_username: reel.owner_username || account.username,
+        owner_full_name: reel.owner_full_name,
+        cover_url: coverByShortcode[reel.shortcode] || reel.source_cover_url,
+        source_cover_url: reel.source_cover_url,
+        published_at: reel.published_at,
+        views: reel.views,
+        likes: reel.likes,
+        comments: reel.comments,
+        sync_status: 'ready',
+        sync_error: null,
+        last_synced_at: now,
+        updated_at: now,
+      });
+    }
+
+    const savedRows = [];
+    for (const chunk of chunkArray(upsertRows, DB_CHUNK_SIZE)) {
+      const { data, error } = await this.supabase
+        .from('reels')
+        .upsert(chunk, { onConflict: 'user_id,shortcode' })
+        .select('id, shortcode, views');
+
+      if (error) {
+        console.error('Bulk upsert reels failed:', error);
+        continue;
+      }
+      savedRows.push(...(data || []));
+    }
+
+    const savedShortcodes = new Set(savedRows.map(r => r.shortcode));
+    failedCount = upsertRows.filter(r => !savedShortcodes.has(r.shortcode)).length;
+
+    const scrapedByShortcode = Object.fromEntries(scraped.map(r => [r.shortcode, r]));
+    const snapshots = savedRows.map(row => {
+      const src = scrapedByShortcode[row.shortcode];
+      return {
+        reel_id: row.id,
+        views: src?.views ?? row.views ?? 0,
+        likes: src?.likes ?? 0,
+        comments: src?.comments ?? 0,
+      };
+    });
+
+    for (const chunk of chunkArray(snapshots, DB_CHUNK_SIZE)) {
+      if (!chunk.length) continue;
+      const { error } = await this.supabase.from('reel_metric_snapshots').insert(chunk);
+      if (error) {
+        console.error('Bulk snapshot insert failed:', error);
+        failedCount += chunk.length;
+        throwOnError({ error }, 'insert snapshots');
+      }
+    }
+
+    const successfulUpdates = toUpdate.filter(({ reel }) => savedShortcodes.has(reel.shortcode));
+    const successfulInserts = toInsert.filter(({ reel }) => savedShortcodes.has(reel.shortcode));
+    const viewsDelta = calcImportViewsDelta(successfulUpdates);
+
+    const { data: updatedAccount, error: accountUpdateError } = await this.supabase
+      .from('instagram_accounts')
+      .update({
+        sync_status: failedCount > 0 && savedRows.length === 0 ? 'error' : 'ready',
+        sync_error: failedCount > 0 && savedRows.length === 0
+          ? 'Не удалось сохранить Reels'
+          : failedCount > 0
+            ? `Часть Reels не сохранена (${failedCount})`
+            : null,
         last_synced_at: now,
         display_name: scraped[0]?.owner_full_name || account.display_name,
         updated_at: now,
       })
       .eq('id', account.id)
+      .eq('user_id', this.userId)
       .select()
       .single();
 
-    await this.supabase
+    throwOnError({ error: accountUpdateError }, 'finalize account sync');
+
+    const { error: profileError } = await this.supabase
       .from('profiles')
       .update({ instagram_username: account.username, updated_at: now })
       .eq('id', this.userId);
 
-    return {
-      account: updatedAccount,
+    if (profileError) console.error('Profile update error:', profileError.message);
+
+    if (savedRows.length === 0 && scraped.length > 0) {
+      throw new Error('Не удалось сохранить Reels в базу');
+    }
+
+    return buildSyncSummary({
       checked: scraped.length,
-      newCount,
-      updatedCount,
+      newCount: successfulInserts.length,
+      updatedCount: successfulUpdates.length,
+      failedCount,
       viewsDelta,
-      imported: scraped.length,
-    };
+      account: updatedAccount,
+    });
   }
 }
+
+export { SYNC_COOLDOWN_MS, SYNC_STALE_MS };

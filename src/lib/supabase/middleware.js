@@ -30,7 +30,16 @@ export async function updateSession(request) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
+  const isApi = path.startsWith('/api');
   const isAuthPage = path === '/login' || path === '/signup';
+
+  if (isApi) {
+    // Always refresh session cookies for API; never HTML-redirect.
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return supabaseResponse;
+  }
 
   if (!user && !isAuthPage) {
     const url = request.nextUrl.clone();

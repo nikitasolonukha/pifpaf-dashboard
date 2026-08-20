@@ -68,10 +68,7 @@ export default function AccountPage() {
       <ReelsSyncProgress
         active={syncMonitor.active}
         elapsedSec={syncMonitor.elapsedSec}
-        stage={syncMonitor.stage}
-        progress={syncMonitor.progress}
-        etaText={syncMonitor.etaText}
-        title="Синхронизируем Reels с Instagram…"
+        title="Синхронизируем Instagram…"
       />
 
       <section className="rounded-[var(--radius-lg)] border border-[var(--border-soft)] p-6 shadow-[var(--shadow-soft)]" style={{ background: 'var(--surface)' }}>

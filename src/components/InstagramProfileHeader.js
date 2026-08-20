@@ -72,6 +72,8 @@ export function SyncToast({ summary, onClose }) {
   if (!summary) return null;
 
   const checked = Number(summary.checked ?? 0);
+  const failedCount = Number(summary.failedCount ?? 0);
+  const partial = summary.partial || failedCount > 0;
   const newPart = summary.newCount > 0
     ? `${summary.newCount} новых`
     : 'Новых Reel нет';
@@ -80,14 +82,22 @@ export function SyncToast({ summary, onClose }) {
     ? viewsDelta
     : `+${viewsDelta}`;
 
+  const detail = summary.errorMessage
+    ? summary.errorMessage
+    : partial
+      ? `${checked.toLocaleString('ru-RU')} проверено · ${Number(summary.updatedCount ?? 0) + Number(summary.newCount ?? 0)} обновлено · ${failedCount} ошибок`
+      : `${checked.toLocaleString('ru-RU')} Reels проверено · ${newPart} · ${viewsPart} просмотров`;
+
   return (
     <div
       className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[calc(100%-2rem)] p-4 rounded-[var(--radius)] border shadow-lg animate-in"
       style={{ background: 'var(--surface)', borderColor: 'var(--border-soft)' }}
     >
-      <p className="font-semibold text-sm mb-1">Instagram обновлён ✨</p>
+      <p className="font-semibold text-sm mb-1">
+        {summary.errorMessage ? 'Не удалось выполнить действие' : partial ? 'Instagram обновлён частично' : 'Instagram обновлён ✨'}
+      </p>
       <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-        {checked.toLocaleString('ru-RU')} Reels проверено · {newPart} · {viewsPart} просмотров
+        {detail}
       </p>
       <button type="button" onClick={onClose} className="text-xs mt-2 underline" style={{ color: 'var(--text-secondary)' }}>
         Закрыть

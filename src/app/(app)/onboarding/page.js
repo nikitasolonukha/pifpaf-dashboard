@@ -4,20 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AtSign } from 'lucide-react';
 import ReelsSyncProgress from '@/components/ReelsSyncProgress';
-import { getSyncProgress } from '@/lib/instagram/syncProgress';
-
-const STAGES = [
-  'Подключаем Instagram',
-  'Получаем Reels',
-  'Сохраняем статистику',
-  'Готовим dashboard',
-];
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [stage, setStage] = useState(-1);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -32,12 +23,7 @@ export default function OnboardingPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
-    setStage(0);
     setElapsedSec(0);
-
-    const stageTimer = setInterval(() => {
-      setStage(s => (s < STAGES.length - 1 ? s + 1 : s));
-    }, 2500);
 
     try {
       const res = await fetch('/api/instagram/connect', {
@@ -46,22 +32,17 @@ export default function OnboardingPage() {
         body: JSON.stringify({ input }),
       });
       const data = await res.json();
-      clearInterval(stageTimer);
 
       if (!res.ok) {
         setError(data.error || 'Не удалось подключить');
-        setStage(-1);
         setLoading(false);
         return;
       }
 
-      setStage(STAGES.length - 1);
       setResult(data.summary);
       setTimeout(() => router.push('/dashboard'), 1800);
     } catch {
-      clearInterval(stageTimer);
       setError('Ошибка сети. Попробуй снова.');
-      setStage(-1);
       setLoading(false);
     }
   }
@@ -79,7 +60,7 @@ export default function OnboardingPage() {
           <>
             <h1 className="text-xl font-semibold mb-2">Готово ✨</h1>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Получено {result.imported} Reels — открываем dashboard…
+              Получено {result.imported ?? result.newCount ?? 0} Reels — открываем dashboard…
             </p>
           </>
         ) : (
@@ -87,10 +68,7 @@ export default function OnboardingPage() {
             variant="card"
             active
             elapsedSec={elapsedSec}
-            stage={Math.max(stage, 0)}
-            progress={getSyncProgress(elapsedSec)}
-            title="Загружаем твои Reels…"
-            stages={STAGES}
+            title="Подключаем Instagram…"
           />
         )}
       </div>

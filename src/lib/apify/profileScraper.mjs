@@ -81,9 +81,21 @@ export async function scrapeProfileReels(profileUrl, { cutoffDate } = {}) {
     }
   }
 
-  if (normalized.length === 0 && rawItems.length > 0 && errors.length === filtered.length) {
+  // Dedupe by shortcode before returning to import pipeline.
+  const byShortcode = new Map();
+  for (const reel of normalized) {
+    if (!reel.shortcode) continue;
+    byShortcode.set(reel.shortcode, reel);
+  }
+  const deduped = [...byShortcode.values()];
+
+  if (deduped.length === 0 && rawItems.length > 0 && errors.length === filtered.length) {
     throw new Error('Не удалось обработать Reels профиля. Попробуй позже.');
   }
 
-  return { reels: normalized, rawCount: rawItems.length, skipped: errors.length };
+  return {
+    reels: deduped,
+    rawCount: rawItems.length,
+    skipped: errors.length + (normalized.length - deduped.length),
+  };
 }

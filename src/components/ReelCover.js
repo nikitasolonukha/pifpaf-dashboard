@@ -3,9 +3,10 @@
 import { useState } from 'react';
 import Image from 'next/image';
 import { Film } from 'lucide-react';
+import { getCoverSources, pickNextCoverSrc } from '@/lib/apify/coverSources.mjs';
 
 /**
- * Shared cover with graceful fallback: cover_url → source_cover_url → placeholder.
+ * Shared cover with graceful fallback across unique sources → placeholder.
  */
 export default function ReelCover({
   reel,
@@ -14,18 +15,9 @@ export default function ReelCover({
   placeholderClassName = '',
   iconSize = 28,
 }) {
-  const [failedSrc, setFailedSrc] = useState(null);
-
-  const primarySrc = reel?.cover_url || '';
-  const fallbackSrc = reel?.source_cover_url || '';
-  const srcToRender =
-    !primarySrc
-      ? fallbackSrc
-      : failedSrc === primarySrc
-        ? fallbackSrc
-        : failedSrc === fallbackSrc
-          ? ''
-          : primarySrc;
+  const sources = getCoverSources(reel);
+  const [failedSrcs, setFailedSrcs] = useState([]);
+  const srcToRender = pickNextCoverSrc(sources, failedSrcs);
 
   if (!srcToRender) {
     return (
@@ -45,7 +37,7 @@ export default function ReelCover({
       fill
       sizes={sizes}
       className={`object-cover ${className}`}
-      onError={() => setFailedSrc(srcToRender)}
+      onError={() => setFailedSrcs(prev => (prev.includes(srcToRender) ? prev : [...prev, srcToRender]))}
     />
   );
 }
